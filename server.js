@@ -26,48 +26,48 @@ app.get('/', (req, res) => {
   res.send('Servidor corriendo correctamente 🚀')
 })
 
-// Monta el router personalizado
+// Ruta para guardar desde React (opcional)
 app.use('/api/estudios', estudiosRouter)
 
-// ─── RUTA DE CHECKOUT ───────────────────────────────────
+// ─── CHECKOUT STRIPE ────────────────────────────────────
 app.post('/api/checkout', async (req, res) => {
-  const { nombre, nombreCandidato, ciudad, puesto, tipo, email, visitorId } = req.body
+  const form = req.body
   const precios = { estandar: 50000, urgente: 80000 }
 
-  if (!nombre || !ciudad || !puesto || !tipo || !email) {
+  // Validar mínimo necesario
+  if (!form.nombreSolicitante || !form.email || !form.nombreCandidato || !form.tipo) {
     return res.status(400).json({ error: 'Faltan datos requeridos' })
   }
 
   try {
-    await db.collection('estudios').add({
-      nombre,
-      ciudad,
-      puesto,
-      tipo,
-      email,
-      visitorId,
+    // 1. Guardar todo el formulario
+    const docRef = await db.collection('estudios').add({
+      ...form,
       fecha: new Date(),
       status: 'pendiente_pago'
     })
 
+    // 2. Crear sesión de pago con referencia al documento
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],
       line_items: [{
         price_data: {
           currency: 'mxn',
           product_data: {
-            name: `Estudio ${tipo}`,
-            description: `Candidato: ${nombreCandidato}, Ciudad: ${ciudad}, Puesto: ${puesto}`
+            name: `Estudio ${form.tipo}`,
+            description: `Solicitante: ${form.nombreSolicitante}, Candidato: ${form.nombreCandidato}`
           },
-          unit_amount: precios[tipo]
+          unit_amount: precios[form.tipo]
         },
         quantity: 1
       }],
       mode: 'payment',
-      customer_email: email,
+      customer_email: form.email,
       success_url: `https://saxmexico.com/gracias`,
       cancel_url: `https://saxmexico.com/`,
-      metadata: { nombre, ciudad, puesto, tipo, visitorId }
+      metadata: {
+        docId: docRef.id // Enlace directo al documento
+      }
     })
 
     res.json({ checkoutUrl: session.url })
@@ -78,7 +78,7 @@ app.post('/api/checkout', async (req, res) => {
 })
 // ────────────────────────────────────────────────────────
 
-// ─── WEBHOOK DE STRIPE ──────────────────────────────────
+// ─── WEBHOOK STRIPE ─────────────────────────────────────
 app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
   const sig = req.headers['stripe-signature']
   let event
@@ -96,32 +96,26 @@ app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res)
 
   if (event.type === 'checkout.session.completed') {
     const session = event.data.object
-    const { nombre, ciudad, puesto, tipo, visitorId } = session.metadata
+    const docId = session.metadata?.docId
+
+    if (!docId) {
+      console.warn('⚠️ No se encontró docId en metadata')
+      return res.status(400).send('Falta docId en metadata')
+    }
 
     try {
-      const snap = await db.collection('estudios')
-        .where('nombre', '==', nombre)
-        .where('ciudad', '==', ciudad)
-        .where('puesto', '==', puesto)
-        .where('tipo', '==', tipo)
-        .where('visitorId', '==', visitorId)
-        .where('status', '==', 'pendiente_pago')
-        .orderBy('fecha', 'desc')
-        .limit(1)
-        .get()
+      const ref = db.collection('estudios').doc(docId)
 
-      if (!snap.empty) {
-        await snap.docs[0].ref.update({
-          status: 'pagado',
-          stripeSessionId: session.id,
-          pago_completado: new Date()
-        })
-        console.log('✅ Estudio marcado como pagado')
-      } else {
-        console.warn('⚠️ No se encontró estudio pendiente')
-      }
+      await ref.update({
+        status: 'pagado',
+        stripeSessionId: session.id,
+        pago_completado: new Date()
+      })
+
+      console.log(`✅ Estudio ${docId} marcado como pagado`)
     } catch (e) {
       console.error('❌ Error actualizando Firestore:', e)
+      return res.status(500).send('Error actualizando Firestore')
     }
   }
 
@@ -129,7 +123,7 @@ app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res)
 })
 // ────────────────────────────────────────────────────────
 
-// Inicia el servidor
+// ─── INICIAR SERVIDOR ───────────────────────────────────
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Backend escuchando en http://0.0.0.0:${PORT}`)
 })
