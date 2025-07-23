@@ -57,7 +57,7 @@ app.post('/api/checkout', async (req, res) => {
           currency: 'mxn',
           product_data: {
             name: `Estudio ${tipo}`,
-            description: `Candidato: ${nombre}, Ciudad: ${ciudad}, Puesto: ${puesto}`
+            description: `Candidato: ${nombreCandidato}, Ciudad: ${ciudad}, Puesto: ${puesto}`
           },
           unit_amount: precios[tipo]
         },
