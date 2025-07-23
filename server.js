@@ -14,7 +14,6 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 
 // ─── MIDDLEWARES ────────────────────────────────────────
-// CORS
 app.use(cors({
   origin: [
     'https://frontend-sax-clientes.onrender.com',
@@ -24,7 +23,7 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
-// JSON body parser (salta el webhook que usa raw)
+// JSON parser, excepto para el webhook que necesita raw
 app.use((req, res, next) => {
   if (req.originalUrl === '/webhook') return next();
   express.json()(req, res, next);
@@ -36,7 +35,7 @@ app.get('/', (req, res) => {
   res.send('Servidor corriendo correctamente 🚀');
 });
 
-// 3️⃣ Monta tu router de estudios pasando la instancia de db y bucket
+// 3️⃣ Monta tu router de estudios, pasándole db y bucket
 const estudiosRouter = require('./routes/estudios')({ db, bucket });
 app.use('/api/estudios', estudiosRouter);
 
@@ -45,19 +44,20 @@ app.post('/api/checkout', async (req, res) => {
   const form = req.body;
   const precios = { estandar: 50000, urgente: 80000 };
 
+  // Validación
   if (!form.nombreSolicitante || !form.email || !form.nombreCandidato || !form.tipo) {
     return res.status(400).json({ error: 'Faltan datos requeridos' });
   }
 
   try {
-    // Guarda el formulario en Firestore
+    // 1. Guarda el formulario
     const docRef = await db.collection('estudios').add({
       ...form,
       fecha: new Date(),
       status: 'pendiente_pago'
     });
 
-    // Crea la sesión de Checkout
+    // 2. Crea la sesión de Checkout
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],
       line_items: [{
@@ -78,10 +78,10 @@ app.post('/api/checkout', async (req, res) => {
       metadata: { docId: docRef.id }
     });
 
-    res.json({ checkoutUrl: session.url });
+    return res.json({ checkoutUrl: session.url });
   } catch (err) {
     console.error('❌ Error en /api/checkout:', err);
-    res.status(500).json({ error: 'Error al procesar el pago' });
+    return res.status(500).json({ error: 'Error al procesar el pago' });
   }
 });
 
@@ -100,4 +100,37 @@ app.post(
         process.env.STRIPE_WEBHOOK_SECRET
       );
     } catch (err) {
-      con
+      console.error('⚠️ Webhook inválido:', err.message);
+      return res.status(400).send(`Webhook Error: ${err.message}`);
+    }
+
+    if (event.type === 'checkout.session.completed') {
+      const session = event.data.object;
+      const docId = session.metadata?.docId;
+
+      if (!docId) {
+        console.warn('⚠️ No se encontró docId en metadata');
+        return res.status(400).send('Falta docId en metadata');
+      }
+
+      try {
+        await db.collection('estudios').doc(docId).update({
+          status: 'pagado',
+          stripeSessionId: session.id,
+          pago_completado: new Date()
+        });
+        console.log(`✅ Estudio ${docId} marcado como pagado`);
+      } catch (e) {
+        console.error('❌ Error actualizando Firestore:', e);
+        return res.status(500).send('Error actualizando Firestore');
+      }
+    }
+
+    return res.status(200).send('Evento recibido');
+  }
+);
+
+// ─── INICIA SERVIDOR ────────────────────────────────────
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`🚀 Backend escuchando en http://0.0.0.0:${PORT}`);
+});
