@@ -1,47 +1,48 @@
-// routes/estudios.js
-const express = require('express')
-const multer = require('multer')
-const router = express.Router()
-const admin = require('../firebase')
+// src/routes/estudios.js
+const express = require('express');
+const multer = require('multer');
 
-const db = admin.firestore()
-const bucket = admin.storage().bucket()
-const upload = multer({ storage: multer.memoryStorage() })
+module.exports = ({ db, bucket }) => {
+  const router = express.Router();
+  const upload = multer({ storage: multer.memoryStorage() });
 
-router.post('/', upload.single('cv'), async (req, res) => {
-  try {
-    const form = req.body
-    const file = req.file
+  router.post('/', upload.single('cv'), async (req, res) => {
+    try {
+      const form = req.body;
+      const file = req.file;
+      let cvUrl = '';
 
-    let cvUrl = ''
-    if (file) {
-      const fileName = `cv/${Date.now()}_${file.originalname}`
-      const fileRef = bucket.file(fileName)
+      // Si llegó un archivo CV, súbelo
+      if (file) {
+        const fileName = `cv/${Date.now()}_${file.originalname}`;
+        const fileRef = bucket.file(fileName);
 
-      await fileRef.save(file.buffer, {
-        metadata: { contentType: file.mimetype }
-      })
+        await fileRef.save(file.buffer, {
+          metadata: { contentType: file.mimetype }
+        });
 
-      const [url] = await fileRef.getSignedUrl({
-        action: 'read',
-        expires: '03-01-2030'
-      })
+        const [url] = await fileRef.getSignedUrl({
+          action: 'read',
+          expires: '03-01-2030'
+        });
 
-      cvUrl = url
+        cvUrl = url;
+      }
+
+      // Guarda el documento en Firestore
+      await db.collection('estudios').add({
+        ...form,
+        cvUrl,
+        timestamp: new Date(),
+        status: 'pendiente_pago'
+      });
+
+      res.status(200).json({ message: 'Estudio guardado con CV', cvUrl });
+    } catch (err) {
+      console.error('❌ Error guardando estudio:', err);
+      res.status(500).json({ error: 'Error al guardar en Firestore' });
     }
+  });
 
-    await db.collection('estudios').add({
-      ...form,
-      cvUrl,
-      timestamp: new Date(),
-      status: 'pendiente_pago'
-    })
-
-    res.status(200).json({ message: 'Estudio guardado con CV', cvUrl })
-  } catch (err) {
-    console.error('❌ Error:', err)
-    res.status(500).json({ error: 'Error al guardar en Firestore' })
-  }
-})
-
-module.exports = router
+  return router;
+};
