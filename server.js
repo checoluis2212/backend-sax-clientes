@@ -65,7 +65,7 @@ app.post('/api/checkout', async (req, res) => {
       }],
       mode: 'payment',
       customer_email: email,
-      success_url: `https://saxmexico.com/gracias?session_id={CHECKOUT_SESSION_ID}`,
+      success_url: `https://saxmexico.com/gracias.html?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `https://saxmexico.com/`,
       metadata: { nombre, ciudad, puesto, tipo, visitorId }
     })
