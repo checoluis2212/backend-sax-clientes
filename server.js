@@ -4,7 +4,7 @@ const express = require('express');
 const cors = require('cors');
 const Stripe = require('stripe');
 
-// 1️⃣ Importa tu helper de Firebase (exporta { db, bucket })
+// 1️⃣ Importa helper de Firebase (exporta { db, bucket })
 const { db, bucket } = require('./firebase');
 
 // 2️⃣ Inicializa Stripe
@@ -25,7 +25,7 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
-// JSON parser (salta webhook raw)
+// JSON parser (salta solo la ruta /webhook)
 app.use((req, res, next) => {
   if (req.originalUrl === '/webhook') return next();
   express.json()(req, res, next);
@@ -37,7 +37,7 @@ app.get('/', (req, res) => {
   res.send('Servidor corriendo correctamente 🚀');
 });
 
-// Monta tu router de estudios **UNA VEZ**, pasándole { db, bucket }
+// Monta tu router de estudios pasando { db, bucket }
 const estudiosRouter = require('./routes/estudios')({ db, bucket });
 app.use('/api/estudios', estudiosRouter);
 
@@ -77,10 +77,10 @@ app.post('/api/checkout', async (req, res) => {
       metadata: { docId: docRef.id }
     });
 
-    res.json({ checkoutUrl: session.url });
+    return res.json({ checkoutUrl: session.url });
   } catch (err) {
     console.error('❌ Error en /api/checkout:', err);
-    res.status(500).json({ error: 'Error al procesar el pago' });
+    return res.status(500).json({ error: 'Error al procesar el pago' });
   }
 });
 
@@ -91,7 +91,6 @@ app.post(
   async (req, res) => {
     const sig = req.headers['stripe-signature'];
     let event;
-
     try {
       event = stripe.webhooks.constructEvent(
         req.body,
@@ -106,12 +105,10 @@ app.post(
     if (event.type === 'checkout.session.completed') {
       const session = event.data.object;
       const docId = session.metadata?.docId;
-
       if (!docId) {
-        console.warn('⚠️ No se encontró docId en metadata');
+        console.warn('⚠️ Falta docId en metadata');
         return res.status(400).send('Falta docId en metadata');
       }
-
       try {
         await db.collection('estudios').doc(docId).update({
           status: 'pagado',
@@ -125,7 +122,7 @@ app.post(
       }
     }
 
-    res.status(200).send('Evento recibido');
+    return res.status(200).send('Evento recibido');
   }
 );
 
