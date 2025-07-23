@@ -1,17 +1,20 @@
-require('dotenv').config()
-const express = require('express')
-const cors = require('cors')
-const Stripe = require('stripe')
-const admin = require('firebase-admin')
+// src/server.js
+require('dotenv').config();
+const express = require('express');
+const cors = require('cors');
+const Stripe = require('stripe');
 
-const stripe = Stripe(process.env.STRIPE_SECRET_KEY)
-const db = require('./firebase')
-const estudiosRouter = require('./routes/estudios')
+// 1️⃣ Importa tu helper que inicializa Firebase (exporta { db, bucket })
+const { db, bucket } = require('./firebase');
 
-const app = express()
-const PORT = process.env.PORT || 3001
+// 2️⃣ Inicializa Stripe
+const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
+
+const app = express();
+const PORT = process.env.PORT || 3001;
 
 // ─── MIDDLEWARES ────────────────────────────────────────
+// CORS
 app.use(cors({
   origin: [
     'https://frontend-sax-clientes.onrender.com',
@@ -21,41 +24,41 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
-// Usa express.json(), excepto para /webhook que necesita express.raw()
+// JSON body parser (salta webhook que usa raw)
 app.use((req, res, next) => {
-  if (req.originalUrl === '/webhook') return next()
-  express.json()(req, res, next)
-})
-// ────────────────────────────────────────────────────────
+  if (req.originalUrl === '/webhook') return next();
+  express.json()(req, res, next);
+});
 
+// ─── RUTAS ───────────────────────────────────────────────
 // Ruta de prueba
 app.get('/', (req, res) => {
-  res.send('Servidor corriendo correctamente 🚀')
-})
+  res.send('Servidor corriendo correctamente 🚀');
+});
 
-// Ruta para guardar desde React (opcional)
-app.use('/api/estudios', estudiosRouter)
+// 3️⃣ Monta tu router de estudios, pasándole la instancia de Firestore
+const estudiosRouter = require('./routes/estudios')({ db, bucket });
+app.use('/api/estudios', estudiosRouter);
 
 // ─── CHECKOUT STRIPE ────────────────────────────────────
 app.post('/api/checkout', async (req, res) => {
-  const form = req.body
-  console.log('🧾 Formulario recibido en /checkout:', form)
-  const precios = { estandar: 50000, urgente: 80000 }
+  const form = req.body;
+  const precios = { estandar: 50000, urgente: 80000 };
 
-  // Validar mínimo necesario
+  // Validación básica
   if (!form.nombreSolicitante || !form.email || !form.nombreCandidato || !form.tipo) {
-    return res.status(400).json({ error: 'Faltan datos requeridos' })
+    return res.status(400).json({ error: 'Faltan datos requeridos' });
   }
 
   try {
-    // 1. Guardar todo el formulario
+    // 1. Guarda todo el formulario en Firestore
     const docRef = await db.collection('estudios').add({
       ...form,
       fecha: new Date(),
       status: 'pendiente_pago'
-    })
+    });
 
-    // 2. Crear sesión de pago con referencia al documento
+    // 2. Crea la sesión de Stripe Checkout
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],
       line_items: [{
@@ -71,67 +74,64 @@ app.post('/api/checkout', async (req, res) => {
       }],
       mode: 'payment',
       customer_email: form.email,
-      success_url: `https://saxmexico.com/compra`,
-      cancel_url: `https://saxmexico.com/`,
-      metadata: {
-        docId: docRef.id // Enlace directo al documento
-      }
-    })
+      success_url: 'https://saxmexico.com/compra',
+      cancel_url: 'https://saxmexico.com/',
+      metadata: { docId: docRef.id }
+    });
 
-    res.json({ checkoutUrl: session.url })
+    res.json({ checkoutUrl: session.url });
   } catch (err) {
-    console.error('❌ Error en /api/checkout:', err)
-    res.status(500).json({ error: 'Error al procesar el pago' })
+    console.error('❌ Error en /api/checkout:', err);
+    res.status(500).json({ error: 'Error al procesar el pago' });
   }
-})
-// ────────────────────────────────────────────────────────
+});
 
 // ─── WEBHOOK STRIPE ─────────────────────────────────────
-app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
-  const sig = req.headers['stripe-signature']
-  let event
-
-  try {
-    event = stripe.webhooks.constructEvent(
-      req.body,
-      sig,
-      process.env.STRIPE_WEBHOOK_SECRET
-    )
-  } catch (err) {
-    console.error('⚠️ Webhook inválido:', err.message)
-    return res.status(400).send(`Webhook Error: ${err.message}`)
-  }
-
-  if (event.type === 'checkout.session.completed') {
-    const session = event.data.object
-    const docId = session.metadata?.docId
-
-    if (!docId) {
-      console.warn('⚠️ No se encontró docId en metadata')
-      return res.status(400).send('Falta docId en metadata')
-    }
+app.post(
+  '/webhook',
+  express.raw({ type: 'application/json' }),
+  async (req, res) => {
+    const sig = req.headers['stripe-signature'];
+    let event;
 
     try {
-      const ref = db.collection('estudios').doc(docId)
-
-      await ref.update({
-        status: 'pagado',
-        stripeSessionId: session.id,
-        pago_completado: new Date()
-      })
-
-      console.log(`✅ Estudio ${docId} marcado como pagado`)
-    } catch (e) {
-      console.error('❌ Error actualizando Firestore:', e)
-      return res.status(500).send('Error actualizando Firestore')
+      event = stripe.webhooks.constructEvent(
+        req.body,
+        sig,
+        process.env.STRIPE_WEBHOOK_SECRET
+      );
+    } catch (err) {
+      console.error('⚠️ Webhook inválido:', err.message);
+      return res.status(400).send(`Webhook Error: ${err.message}`);
     }
+
+    if (event.type === 'checkout.session.completed') {
+      const session = event.data.object;
+      const docId = session.metadata?.docId;
+
+      if (!docId) {
+        console.warn('⚠️ No se encontró docId en metadata');
+        return res.status(400).send('Falta docId en metadata');
+      }
+
+      try {
+        await db.collection('estudios').doc(docId).update({
+          status: 'pagado',
+          stripeSessionId: session.id,
+          pago_completado: new Date()
+        });
+        console.log(`✅ Estudio ${docId} marcado como pagado`);
+      } catch (e) {
+        console.error('❌ Error actualizando Firestore:', e);
+        return res.status(500).send('Error actualizando Firestore');
+      }
+    }
+
+    res.status(200).send('Evento recibido');
   }
+);
 
-  res.status(200).send('Evento recibido')
-})
-// ────────────────────────────────────────────────────────
-
-// ─── INICIAR SERVIDOR ───────────────────────────────────
+// ─── INICIA SERVIDOR ────────────────────────────────────
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 Backend escuchando en http://0.0.0.0:${PORT}`)
-})
+  console.log(`🚀 Backend escuchando en http://0.0.0.0:${PORT}`);
+});
