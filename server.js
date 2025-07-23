@@ -13,10 +13,14 @@ const PORT = process.env.PORT || 3001
 
 // ─── MIDDLEWARES ────────────────────────────────────────
 app.use(cors({
-  origin: 'https://frontend-sax-clientes.onrender.com', // permite solo este frontend
+  origin: [
+    'https://frontend-sax-clientes.onrender.com',
+    'https://clientes.saxmexico.com'
+  ],
   methods: ['GET', 'POST', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
-}))
+}));
+
 // Usa express.json(), excepto para /webhook que necesita express.raw()
 app.use((req, res, next) => {
   if (req.originalUrl === '/webhook') return next()
