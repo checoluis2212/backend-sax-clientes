@@ -12,7 +12,7 @@ module.exports = ({ db, bucket }) => {
       const file = req.file;
       let cvUrl = '';
 
-      // Si llegó un archivo CV, súbelo
+      // Si llega un CV, lo subes al bucket
       if (file) {
         const fileName = `cv/${Date.now()}_${file.originalname}`;
         const fileRef = bucket.file(fileName);
@@ -29,7 +29,7 @@ module.exports = ({ db, bucket }) => {
         cvUrl = url;
       }
 
-      // Guarda el documento en Firestore
+      // Guardas el documento en Firestore
       await db.collection('estudios').add({
         ...form,
         cvUrl,
@@ -37,7 +37,10 @@ module.exports = ({ db, bucket }) => {
         status: 'pendiente_pago'
       });
 
-      res.status(200).json({ message: 'Estudio guardado con CV', cvUrl });
+      res.status(200).json({
+        message: 'Estudio guardado con CV',
+        cvUrl
+      });
     } catch (err) {
       console.error('❌ Error guardando estudio:', err);
       res.status(500).json({ error: 'Error al guardar en Firestore' });
