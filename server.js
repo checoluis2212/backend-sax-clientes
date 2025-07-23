@@ -126,6 +126,22 @@ app.post(
   }
 );
 
+// ENDPOINT DE PRUEBA: sube un fichero hello.txt al bucket
+app.post('/test-upload', async (req, res) => {
+  try {
+    // Creamos en Storage: carpeta "test", archivo "hello.txt"
+    const fileRef = bucket.file('test/hello.txt');
+    await fileRef.save('¡Hola desde Render!', {
+      metadata: { contentType: 'text/plain' }
+    });
+    return res.send('✅ test/hello.txt subido con éxito');
+  } catch (err) {
+    console.error('❌ Error en /test-upload:', err);
+    return res.status(500).send('❌ Error subiendo test/hello.txt');
+  }
+});
+
+
 // ─── INICIA SERVIDOR ────────────────────────────────────
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Backend escuchando en http://0.0.0.0:${PORT}`);
