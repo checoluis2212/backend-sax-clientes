@@ -32,6 +32,7 @@ app.use('/api/estudios', estudiosRouter)
 // ─── CHECKOUT STRIPE ────────────────────────────────────
 app.post('/api/checkout', async (req, res) => {
   const form = req.body
+  console.log('🧾 Formulario recibido en /checkout:', form)
   const precios = { estandar: 50000, urgente: 80000 }
 
   // Validar mínimo necesario
