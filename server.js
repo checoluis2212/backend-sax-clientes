@@ -67,7 +67,7 @@ app.post('/api/checkout', async (req, res) => {
       }],
       mode: 'payment',
       customer_email: form.email,
-      success_url: `https://saxmexico.com/gracias`,
+      success_url: `https://saxmexico.com/compra`,
       cancel_url: `https://saxmexico.com/`,
       metadata: {
         docId: docRef.id // Enlace directo al documento
