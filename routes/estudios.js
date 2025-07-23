@@ -8,23 +8,33 @@ module.exports = ({ db, bucket }) => {
 
   router.post('/', upload.single('cv'), async (req, res) => {
     try {
-      const form = req.body;
+      const { nombreCandidato, ciudad, puesto, ...rest } = req.body;
       const file = req.file;
       let cvUrl = '';
 
+      // Si llegó un archivo, súbelo a Storage
       if (file) {
         const fileName = `cv/${Date.now()}_${file.originalname}`;
         const fileRef = bucket.file(fileName);
-        await fileRef.save(file.buffer, { metadata: { contentType: file.mimetype } });
-        const [url] = await fileRef.getSignedUrl({ action: 'read', expires: '03-01-2030' });
+        await fileRef.save(file.buffer, {
+          metadata: { contentType: file.mimetype }
+        });
+        const [url] = await fileRef.getSignedUrl({
+          action: 'read',
+          expires: '03-01-2030'
+        });
         cvUrl = url;
       }
 
+      // Guarda en Firestore
       const docRef = await db.collection('estudios').add({
-        ...form,
+        nombreCandidato,
+        ciudad,
+        puesto,
         cvUrl,
         timestamp: new Date(),
-        status: 'pendiente_pago'
+        status: 'pendiente_pago',
+        ...rest
       });
 
       return res.status(200).json({
