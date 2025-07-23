@@ -1,0 +1,21 @@
+{
+  "name": "backend-sax-clientes",
+  "version": "1.0.0",
+  "description": "Backend para estudios socioeconómicos",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "body-parser": "^2.2.0",
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.0",
+    "express": "^5.1.0",
+    "firebase-admin": "^13.4.0",
+    "stripe": "^18.3.0"
+  }
+}
