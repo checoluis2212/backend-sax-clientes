@@ -4,13 +4,13 @@ const express = require('express');
 const cors = require('cors');
 const Stripe = require('stripe');
 
-// 1️⃣ Importa helper de Firebase (exporta { db, bucket })
+// Importa tu helper de Firebase (exporta { db, bucket })
 const { db, bucket } = require('./firebase');
 
-// 2️⃣ Inicializa Stripe
+// Inicializa Stripe
 const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
 
-// 3️⃣ Crea la app de Express
+// Crea la app de Express
 const app = express();
 const PORT = process.env.PORT || 3001;
 
@@ -41,40 +41,45 @@ app.get('/', (req, res) => {
 const estudiosRouter = require('./routes/estudios')({ db, bucket });
 app.use('/api/estudios', estudiosRouter);
 
-// ─── CHECKOUT STRIPE ────────────────────────────────────
+// ─── CHECKOUT STRIPE (actualiza, no crea) ────────────────────────
 app.post('/api/checkout', async (req, res) => {
-  const form = req.body;
+  const { docId, nombreSolicitante, email, tipo } = req.body;
   const precios = { estandar: 50000, urgente: 80000 };
 
-  if (!form.nombreSolicitante || !form.email || !form.nombreCandidato || !form.tipo) {
-    return res.status(400).json({ error: 'Faltan datos requeridos' });
+  // Validación básica
+  if (!docId || !nombreSolicitante || !email || !tipo) {
+    return res.status(400).json({ error: 'Faltan datos requeridos (incluye docId)' });
   }
 
   try {
-    const docRef = await db.collection('estudios').add({
-      ...form,
+    // 1️⃣ Actualiza el documento existente
+    await db.collection('estudios').doc(docId).update({
+      nombreSolicitante,
+      email,
+      tipo,
       fecha: new Date(),
       status: 'pendiente_pago'
     });
 
+    // 2️⃣ Crea la sesión de Stripe Checkout
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],
       line_items: [{
         price_data: {
           currency: 'mxn',
           product_data: {
-            name: `Estudio ${form.tipo}`,
-            description: `Solicitante: ${form.nombreSolicitante}, Candidato: ${form.nombreCandidato}`
+            name: `Estudio ${tipo}`,
+            description: `Solicitante: ${nombreSolicitante}`
           },
-          unit_amount: precios[form.tipo]
+          unit_amount: precios[tipo]
         },
         quantity: 1
       }],
       mode: 'payment',
-      customer_email: form.email,
+      customer_email: email,
       success_url: 'https://saxmexico.com/compra',
       cancel_url: 'https://saxmexico.com/',
-      metadata: { docId: docRef.id }
+      metadata: { docId }
     });
 
     return res.json({ checkoutUrl: session.url });
@@ -91,6 +96,7 @@ app.post(
   async (req, res) => {
     const sig = req.headers['stripe-signature'];
     let event;
+
     try {
       event = stripe.webhooks.constructEvent(
         req.body,
