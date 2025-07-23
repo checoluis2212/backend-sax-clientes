@@ -127,9 +127,9 @@ app.post(
 );
 
 // ENDPOINT DE PRUEBA: sube un fichero hello.txt al bucket
+// justo antes de app.listen(...)
 app.post('/test-upload', async (req, res) => {
   try {
-    // Creamos en Storage: carpeta "test", archivo "hello.txt"
     const fileRef = bucket.file('test/hello.txt');
     await fileRef.save('¡Hola desde Render!', {
       metadata: { contentType: 'text/plain' }
