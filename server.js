@@ -31,7 +31,7 @@ app.use('/api/estudios', estudiosRouter)
 
 // ─── RUTA DE CHECKOUT ───────────────────────────────────
 app.post('/api/checkout', async (req, res) => {
-  const { nombre, ciudad, puesto, tipo, email, visitorId } = req.body
+  const { nombre, nombreCandidato, ciudad, puesto, tipo, email, visitorId } = req.body
   const precios = { estandar: 50000, urgente: 80000 }
 
   if (!nombre || !ciudad || !puesto || !tipo || !email) {
