@@ -4,17 +4,18 @@ const express = require('express');
 const cors = require('cors');
 const Stripe = require('stripe');
 
-// 1️⃣ Importa tu helper de Firebase (ya inicializa y exporta { db, bucket })
+// 1️⃣ Importa tu helper de Firebase (exporta { db, bucket })
 const { db, bucket } = require('./firebase');
 
 // 2️⃣ Inicializa Stripe
 const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
 
-// 3️⃣ Crea la app
+// 3️⃣ Crea la app de Express
 const app = express();
 const PORT = process.env.PORT || 3001;
 
 // ─── MIDDLEWARES ────────────────────────────────────────
+// CORS
 app.use(cors({
   origin: [
     'https://frontend-sax-clientes.onrender.com',
@@ -28,7 +29,7 @@ app.use(cors({
 app.use((req, res, next) => {
   if (req.originalUrl === '/webhook') return next();
   express.json()(req, res, next);
-}));
+});
 
 // ─── RUTAS ───────────────────────────────────────────────
 // Ruta de prueba
@@ -36,13 +37,51 @@ app.get('/', (req, res) => {
   res.send('Servidor corriendo correctamente 🚀');
 });
 
-// Monta **una sola vez** tu router de estudios, pasándole { db, bucket }
+// Monta tu router de estudios **UNA VEZ**, pasándole { db, bucket }
 const estudiosRouter = require('./routes/estudios')({ db, bucket });
 app.use('/api/estudios', estudiosRouter);
 
 // ─── CHECKOUT STRIPE ────────────────────────────────────
 app.post('/api/checkout', async (req, res) => {
-  // … tu lógica de checkout aquí …
+  const form = req.body;
+  const precios = { estandar: 50000, urgente: 80000 };
+
+  if (!form.nombreSolicitante || !form.email || !form.nombreCandidato || !form.tipo) {
+    return res.status(400).json({ error: 'Faltan datos requeridos' });
+  }
+
+  try {
+    const docRef = await db.collection('estudios').add({
+      ...form,
+      fecha: new Date(),
+      status: 'pendiente_pago'
+    });
+
+    const session = await stripe.checkout.sessions.create({
+      payment_method_types: ['card'],
+      line_items: [{
+        price_data: {
+          currency: 'mxn',
+          product_data: {
+            name: `Estudio ${form.tipo}`,
+            description: `Solicitante: ${form.nombreSolicitante}, Candidato: ${form.nombreCandidato}`
+          },
+          unit_amount: precios[form.tipo]
+        },
+        quantity: 1
+      }],
+      mode: 'payment',
+      customer_email: form.email,
+      success_url: 'https://saxmexico.com/compra',
+      cancel_url: 'https://saxmexico.com/',
+      metadata: { docId: docRef.id }
+    });
+
+    res.json({ checkoutUrl: session.url });
+  } catch (err) {
+    console.error('❌ Error en /api/checkout:', err);
+    res.status(500).json({ error: 'Error al procesar el pago' });
+  }
 });
 
 // ─── WEBHOOK STRIPE ─────────────────────────────────────
@@ -50,7 +89,43 @@ app.post(
   '/webhook',
   express.raw({ type: 'application/json' }),
   async (req, res) => {
-    // … tu lógica de webhook aquí …
+    const sig = req.headers['stripe-signature'];
+    let event;
+
+    try {
+      event = stripe.webhooks.constructEvent(
+        req.body,
+        sig,
+        process.env.STRIPE_WEBHOOK_SECRET
+      );
+    } catch (err) {
+      console.error('⚠️ Webhook inválido:', err.message);
+      return res.status(400).send(`Webhook Error: ${err.message}`);
+    }
+
+    if (event.type === 'checkout.session.completed') {
+      const session = event.data.object;
+      const docId = session.metadata?.docId;
+
+      if (!docId) {
+        console.warn('⚠️ No se encontró docId en metadata');
+        return res.status(400).send('Falta docId en metadata');
+      }
+
+      try {
+        await db.collection('estudios').doc(docId).update({
+          status: 'pagado',
+          stripeSessionId: session.id,
+          pago_completado: new Date()
+        });
+        console.log(`✅ Estudio ${docId} marcado como pagado`);
+      } catch (e) {
+        console.error('❌ Error actualizando Firestore:', e);
+        return res.status(500).send('Error actualizando Firestore');
+      }
+    }
+
+    res.status(200).send('Evento recibido');
   }
 );
 
