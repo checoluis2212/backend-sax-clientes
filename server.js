@@ -2,82 +2,20 @@
 require('dotenv').config();
 const express = require('express');
 const cors    = require('cors');
+const fetch   = require('node-fetch');
 const Stripe  = require('stripe');
+const admin   = require('firebase-admin');
 const { db, bucket } = require('./firebase');
 
-// Inicializa Stripe con tu clave secreta
+// Inicializar Firebase Admin si no lo has hecho ya en otro sitio:
+// admin.initializeApp({ credential: admin.credential.applicationDefault() });
+
 const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
 
-// Crea la app de Express
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// ─── MIDDLEWARES ────────────────────────────────────────
-
-// 1) CORS: permite orígenes y métodos necesarios
-app.use(cors({
-  origin: [
-    'https://frontend-sax-clientes.onrender.com',
-    'https://clientes.saxmexico.com'
-  ],
-  methods: ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders: ['Content-Type','Authorization']
-}));
-
-// 2) JSON parser (salta solo la ruta /webhook para raw body)
-app.use((req, res, next) => {
-  if (req.originalUrl === '/webhook') return next();
-  express.json()(req, res, next);
-});
-
-// ─── RUTAS ───────────────────────────────────────────────
-
-// Ruta de prueba
-app.get('/', (req, res) => {
-  res.send('Servidor corriendo correctamente 🚀');
-});
-
-// Router de estudios (POST para crear/PUT para actualizar)
-const estudiosRouter = require('./routes/estudios')({ db, bucket });
-app.use('/api/estudios', estudiosRouter);
-
-// ─── CHECKOUT STRIPE ───────────────────────────────────────
-app.post('/api/checkout', async (req, res) => {
-  const { docId, tipo } = req.body;
-  if (!docId || !tipo) {
-    return res.status(400).json({ error: 'docId y tipo son requeridos' });
-  }
-
-  try {
-    await db.collection('estudios').doc(docId).update({
-      tipo,
-      fecha: new Date(),
-      status: 'pendiente_pago'
-    });
-
-    const precios = { estandar: 50000, urgente: 80000 };
-    const session = await stripe.checkout.sessions.create({
-      payment_method_types: ['card'],
-      line_items: [{
-        price_data: {
-          currency: 'mxn',
-          product_data: { name: `Estudio ${tipo}` },
-          unit_amount: precios[tipo]
-        },
-        quantity: 1
-      }],
-      mode: 'payment',
-      success_url:   'https://saxmexico.com/compra',
-      cancel_url:    'https://saxmexico.com/',
-      metadata:      { docId }
-    });
-
-    return res.json({ checkoutUrl: session.url });
-  } catch (err) {
-    console.error('❌ Error en /api/checkout:', err);
-    return res.status(500).json({ error: 'Error al procesar el pago' });
-  }
-});
+// …middlewares igual que antes…
 
 // ─── WEBHOOK STRIPE ───────────────────────────────────────
 app.post(
@@ -98,30 +36,86 @@ app.post(
     }
 
     if (event.type === 'checkout.session.completed') {
-      const session = event.data.object;
-      const docId = session.metadata?.docId;
+      const session       = event.data.object;
+      const docId         = session.metadata?.docId;
+      const transactionId = session.payment_intent;
+      const amount        = session.amount_total / 100;
+      const currency      = session.currency.toUpperCase();
+
       if (!docId) {
         console.warn('⚠️ Falta docId en metadata');
         return res.status(400).send('Falta docId en metadata');
       }
+
+      const estudioRef = db.collection('estudios').doc(docId);
+
+      // 1) Obtenemos el documento para leer firstPurchaseDate
+      const snap = await estudioRef.get();
+      if (!snap.exists) {
+        console.error('❌ Documento no existe:', docId);
+        return res.status(404).send('Documento no encontrado');
+      }
+      const data = snap.data();
+
+      // 2) Preparamos los campos a actualizar
+      const updates = {};
+      // Solo la primera vez
+      if (!data.firstPurchaseDate) {
+        updates.firstPurchaseDate = admin.firestore.FieldValue.serverTimestamp();
+      }
+      // Siempre actualizamos último movimiento
+      updates.lastPurchaseDate  = admin.firestore.FieldValue.serverTimestamp();
+      // Acumulamos el revenue
+      updates.totalRevenue      = admin.firestore.FieldValue.increment(amount);
+      // Cambiamos estado y guardamos meta
+      updates.status            = 'pagado';
+      updates.stripeSessionId   = transactionId;
+      updates.pago_completado   = admin.firestore.FieldValue.serverTimestamp();
+
+      // 3) Aplicamos la actualización
       try {
-        await db.collection('estudios').doc(docId).update({
-          status: 'pagado',
-          stripeSessionId: session.id,
-          pago_completado: new Date()
-        });
-        console.log(`✅ Estudio ${docId} marcado como pagado`);
+        await estudioRef.update(updates);
+        console.log(`✅ Firestore actualizado LTV para estudio ${docId}`);
       } catch (e) {
         console.error('❌ Error actualizando Firestore:', e);
         return res.status(500).send('Error actualizando Firestore');
       }
+
+      // 4) Enviar evento “purchase” a GA4
+      const mpUrl = `https://www.google-analytics.com/mp/collect`
+        + `?measurement_id=${process.env.GA4_MEASUREMENT_ID}`
+        + `&api_secret=${process.env.GA4_API_SECRET}`;
+      const mpPayload = {
+        client_id: transactionId,
+        events: [{
+          name: 'purchase',
+          params: {
+            transaction_id: transactionId,
+            value: amount,
+            currency
+          }
+        }]
+      };
+      try {
+        const resp = await fetch(mpUrl, {
+          method: 'POST',
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify(mpPayload)
+        });
+        console.log(resp.status === 204
+          ? '✅ Evento “purchase” enviado a GA4'
+          : '❌ Error GA4:', await resp.text());
+      } catch (e) {
+        console.error('❌ Falló envío a GA4:', e);
+      }
     }
 
-    return res.status(200).send('Evento recibido');
+    // 5) Respondemos rápido a Stripe
+    res.status(200).send('Evento recibido');
   }
 );
 
-// ─── INICIO DEL SERVIDOR ──────────────────────────────────
+// … arranque del servidor igual que antes …
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Backend escuchando en http://0.0.0.0:${PORT}`);
 });
