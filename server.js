@@ -3,15 +3,6 @@ require('dotenv').config();
 const express = require('express');
 const cors    = require('cors');
 const Stripe  = require('stripe');
-
-// ——— DEBUG: imprimimos las env vars críticas —————————
-console.log('→ STRIPE_SECRET_KEY:', process.env.STRIPE_SECRET_KEY);
-console.log('→ STRIPE_WEBHOOK_SECRET:', process.env.STRIPE_WEBHOOK_SECRET);
-console.log('→ GA4_MEASUREMENT_ID:', process.env.GA4_MEASUREMENT_ID);
-console.log('→ GA4_API_SECRET:', process.env.GA4_API_SECRET);
-console.log('→ FRONTEND_URL:', process.env.FRONTEND_URL);
-// —————————————————————————————————————————————————————————
-
 const { db, bucket } = require('./firebase');
 
 // Inicializa Stripe con tu clave secreta
