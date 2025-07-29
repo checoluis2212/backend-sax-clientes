@@ -4,7 +4,14 @@ const express = require('express');
 const cors    = require('cors');
 const Stripe  = require('stripe');
 
-// Firebase Admin SDK helper (debe exportar { db, bucket })
+// ——— DEBUG: imprimimos las env vars críticas —————————
+console.log('→ STRIPE_SECRET_KEY:', process.env.STRIPE_SECRET_KEY);
+console.log('→ STRIPE_WEBHOOK_SECRET:', process.env.STRIPE_WEBHOOK_SECRET);
+console.log('→ GA4_MEASUREMENT_ID:', process.env.GA4_MEASUREMENT_ID);
+console.log('→ GA4_API_SECRET:', process.env.GA4_API_SECRET);
+console.log('→ FRONTEND_URL:', process.env.FRONTEND_URL);
+// —————————————————————————————————————————————————————————
+
 const { db, bucket } = require('./firebase');
 
 // Inicializa Stripe con tu clave secreta
@@ -45,23 +52,18 @@ app.use('/api/estudios', estudiosRouter);
 
 // ─── CHECKOUT STRIPE ───────────────────────────────────────
 app.post('/api/checkout', async (req, res) => {
-  // Sólo necesitamos docId y tipo para esta ruta
   const { docId, tipo } = req.body;
-
-  // Validación mínima
   if (!docId || !tipo) {
     return res.status(400).json({ error: 'docId y tipo son requeridos' });
   }
 
   try {
-    // 1) Marca el estudio como pendiente de pago
     await db.collection('estudios').doc(docId).update({
       tipo,
       fecha: new Date(),
       status: 'pendiente_pago'
     });
 
-    // 2) Crea la sesión de Stripe Checkout
     const precios = { estandar: 50000, urgente: 80000 };
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],
@@ -79,7 +81,6 @@ app.post('/api/checkout', async (req, res) => {
       metadata:      { docId }
     });
 
-    // 3) Devuelve la URL de redirección
     return res.json({ checkoutUrl: session.url });
   } catch (err) {
     console.error('❌ Error en /api/checkout:', err);
@@ -94,9 +95,7 @@ app.post(
   async (req, res) => {
     const sig = req.headers['stripe-signature'];
     let event;
-
     try {
-      // Verifica firma y parsea evento
       event = stripe.webhooks.constructEvent(
         req.body,
         sig,
@@ -107,7 +106,6 @@ app.post(
       return res.status(400).send(`Webhook Error: ${err.message}`);
     }
 
-    // Si se completó el pago…
     if (event.type === 'checkout.session.completed') {
       const session = event.data.object;
       const docId = session.metadata?.docId;
@@ -116,7 +114,6 @@ app.post(
         return res.status(400).send('Falta docId en metadata');
       }
       try {
-        // Marca el estudio como pagado
         await db.collection('estudios').doc(docId).update({
           status: 'pagado',
           stripeSessionId: session.id,
@@ -129,12 +126,11 @@ app.post(
       }
     }
 
-    // Agradece a Stripe
     return res.status(200).send('Evento recibido');
   }
 );
 
-// ─── INCIO DEL SERVIDOR ─────────────────────────────────────
+// ─── INICIO DEL SERVIDOR ──────────────────────────────────
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Backend escuchando en http://0.0.0.0:${PORT}`);
 });
