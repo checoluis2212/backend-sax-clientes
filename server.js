@@ -11,9 +11,6 @@ const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
 const app    = express();
 const PORT   = process.env.PORT || 3001;
 
-// 🔹 Confiar en proxy para obtener IP real
-app.set('trust proxy', true);
-
 // ─── MIDDLEWARES ────────────────────────────────────────
 app.use(cors({
   origin: [
