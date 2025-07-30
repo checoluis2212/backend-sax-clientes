@@ -2,21 +2,33 @@
 const express = require('express');
 const multer  = require('multer');
 
-module.exports = ({ db, bucket }) => {
+module.exports = ({ db, bucket, FieldValue }) => {
   const router = express.Router();
   const upload = multer({ storage: multer.memoryStorage() });
 
   router.post('/', upload.single('cv'), async (req, res) => {
     try {
-      const { nombreCandidato, ciudad, puesto } = req.body;
-      const file = req.file;
+      // 1) Destructure del body
+      const {
+        visitorId,
+        nombre, apellido, empresa,
+        telefono, email,
+        nombreSolicitante,
+        nombreCandidato, ciudad, puesto,
+        tipo
+      } = req.body;
 
+      if (!visitorId) {
+        return res.status(400).json({ ok: false, error: 'visitorId es obligatorio' });
+      }
+
+      // 2) Si llega un archivo CV, súbelo y obtén su URL
       let cvUrl = '';
-      if (file) {
-        const fileName = `cv/${Date.now()}_${file.originalname}`;
+      if (req.file) {
+        const fileName = `cv/${visitorId}/${Date.now()}_${req.file.originalname}`;
         const fileRef = bucket.file(fileName);
-        await fileRef.save(file.buffer, {
-          metadata: { contentType: file.mimetype }
+        await fileRef.save(req.file.buffer, {
+          metadata: { contentType: req.file.mimetype }
         });
         const [url] = await fileRef.getSignedUrl({
           action: 'read',
@@ -25,22 +37,30 @@ module.exports = ({ db, bucket }) => {
         cvUrl = url;
       }
 
-      const docRef = await db.collection('estudios').add({
-        nombreCandidato,
-        ciudad,
-        puesto,
-        cvUrl,
+      // 3) Prepara el objeto que vamos a guardar en el array submissions
+      const submission = {
         timestamp: new Date(),
-        status: 'pendiente_pago'
-      });
-
-      return res.status(200).json({
-        ok: true,
-        docId: docRef.id,
+        formData: {
+          nombre, apellido, empresa,
+          telefono, email,
+          nombreSolicitante,
+          nombreCandidato, ciudad, puesto,
+          tipo
+        },
         cvUrl
-      });
+      };
+
+      // 4) Upsert en Firestore usando visitorId como ID de doc
+      const userRef = db.collection('estudios').doc(visitorId);
+      await userRef.set({
+        visitorId,
+        submissions: FieldValue.arrayUnion(submission)
+      }, { merge: true });
+
+      // 5) Responde OK
+      return res.status(200).json({ ok: true, cvUrl });
     } catch (err) {
-      console.error('Error guardando estudio:', err);
+      console.error('Error en POST /api/estudios:', err);
       return res.status(500).json({ ok: false, error: err.message });
     }
   });
