@@ -13,8 +13,6 @@ const app  = express();
 const PORT = process.env.PORT || 3001;
 
 // ─── MIDDLEWARES ────────────────────────────────────────
-
-// CORS: permite tus dominios frontend y API
 app.use(cors({
   origin: [
     'https://frontend-sax-clientes.onrender.com',
@@ -62,8 +60,9 @@ app.post('/api/checkout', async (req, res) => {
         quantity: 1
       }],
       mode: 'payment',
-      success_url: `${process.env.FRONTEND_URL}/success?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url:  `${process.env.FRONTEND_URL}/cancel`,
+      // ← Aquí cambiasremos la ruta de éxito a /compra
+      success_url: `${process.env.FRONTEND_URL}/compra?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url:  `${process.env.FRONTEND_URL}/`,
       metadata: { docId, client_id: clientId||'', cac: (cac||0).toString() }
     });
 
@@ -92,17 +91,17 @@ app.post(
     }
 
     if (event.type === 'checkout.session.completed') {
-      const sess = event.data.object;
+      const sess  = event.data.object;
       const docId = sess.metadata.docId;
-      const amount = sess.amount_total/100;
-      const txId = sess.payment_intent;
+      const amount = (sess.amount_total||0) / 100;
+      const txId   = sess.payment_intent;
 
       if (!docId) {
         console.warn('⚠️ Falta docId en metadata');
         return res.status(400).send('Missing docId');
       }
 
-      const ref = db.collection('estudios').doc(docId);
+      const ref  = db.collection('estudios').doc(docId);
       const snap = await ref.get();
       if (!snap.exists) {
         console.error('❌ Documento no existe:', docId);
@@ -122,7 +121,6 @@ app.post(
         updates.firstPurchaseDate = admin.firestore.FieldValue.serverTimestamp();
       }
 
-      // Aplica update
       try {
         await ref.update(updates);
         console.log('✅ Firestore LTV updated for', docId);
@@ -131,7 +129,7 @@ app.post(
         return res.status(500).send('Firestore error');
       }
 
-      // Enviar a GA4
+      // Enviar evento “purchase” a GA4 (opcional)
       const mpUrl = `https://www.google-analytics.com/mp/collect` +
         `?measurement_id=${process.env.GA4_MEASUREMENT_ID}` +
         `&api_secret=${process.env.GA4_API_SECRET}`;
@@ -139,7 +137,11 @@ app.post(
         client_id: sess.metadata.client_id || txId,
         events: [{
           name: 'purchase',
-          params: { transaction_id: txId, value: amount, currency: sess.currency.toUpperCase() }
+          params: {
+            transaction_id: txId,
+            value: amount,
+            currency: sess.currency.toUpperCase()
+          }
         }]
       };
       try {
