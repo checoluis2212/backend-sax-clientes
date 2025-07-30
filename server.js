@@ -61,8 +61,7 @@ app.post('/api/checkout', async (req, res) => {
       }],
       mode: 'payment',
       // ← Aquí cambiasremos la ruta de éxito a /compra
-      success_url: `${process.env.FRONTEND_URL}/compra?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url:  `${process.env.FRONTEND_URL}/`,
+      success_url: `https://saxmexico.com/compra`,
       metadata: { docId, client_id: clientId||'', cac: (cac||0).toString() }
     });
 
