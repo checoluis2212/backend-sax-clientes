@@ -1,3 +1,4 @@
+// src/routes/estudios.js
 const express = require('express');
 const multer  = require('multer');
 
@@ -22,7 +23,7 @@ module.exports = ({ db, bucket }) => {
         cvUrl = url;
       }
 
-      // 1) Creamos el documento
+      // Crea el documento en Firestore
       const docRef = await db.collection('estudios').add({
         nombreCandidato,
         ciudad,
@@ -32,17 +33,15 @@ module.exports = ({ db, bucket }) => {
         status: 'pendiente_pago'
       });
 
-      // 2) Respondemos OK con docId y cvUrl
-      return res.json({
-        ok: true,
+      // Aquí devolvemos un 200 correcto
+      return res.status(200).json({
         docId: docRef.id,
         cvUrl
       });
     } catch (err) {
       console.error('❌ Error guardando estudio:', err);
-      // Devuelve un error de negocio con código 500
+      // Ahora devolvemos un 500 cuando falle
       return res.status(500).json({
-        ok: false,
         error: err.message
       });
     }
