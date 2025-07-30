@@ -63,8 +63,12 @@ module.exports = ({ db, bucket, FieldValue }) => {
         submissions: FieldValue.arrayUnion(submission)
       }, { merge: true });
 
-      // 6) Responde OK
-      return res.status(200).json({ ok: true, cvUrl });
+      // 6) Responde OK e incluye docId
+      return res.status(200).json({
+        ok:    true,
+        docId: visitorId,  // aquí incluimos el ID del documento
+        cvUrl
+      });
     } catch (err) {
       console.error('Error en POST /api/estudios:', err);
       return res.status(500).json({ ok: false, error: err.message });
