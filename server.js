@@ -24,9 +24,90 @@ app.use((req, res, next) => {
   express.json()(req, res, next);
 });
 
-// ─── RUTAS DE ESTUDIOS ───────────────────────────────────
-const estudiosRouter = require('./routes/estudios')({ db, bucket, FieldValue });
-app.use('/api/estudios', estudiosRouter);
+// ─── RUTA DE ESTUDIOS ───────────────────────────────────
+const expressRouter = require('express').Router();
+const multer = require('multer');
+const upload = multer({ storage: multer.memoryStorage() });
+
+expressRouter.post('/', upload.single('cv'), async (req, res) => {
+  try {
+    const {
+      visitorId, // clientId
+      nombre, apellido, empresa,
+      telefono, email,
+      nombreSolicitante,
+      nombreCandidato, ciudad, puesto,
+      tipo,
+      source, medium, campaign, // desde frontend
+      amount                     // monto de esta solicitud
+    } = req.body;
+
+    if (!visitorId) {
+      return res.status(400).json({ ok: false, error: 'visitorId es obligatorio' });
+    }
+
+    // ─── 1) Subir CV si existe ─────────────────────
+    let cvUrl = '';
+    if (req.file) {
+      const fileName = `cvs/${visitorId}_${Date.now()}_${req.file.originalname}`;
+      const file = bucket.file(fileName);
+      await file.save(req.file.buffer, { contentType: req.file.mimetype });
+      cvUrl = `https://storage.googleapis.com/${bucket.name}/${fileName}`;
+    }
+
+    const clientRef = db.collection('clientes').doc(visitorId);
+    const clientSnap = await clientRef.get();
+    const now = new Date().toISOString();
+
+    // ─── 2) Crear cliente si no existe ─────────────
+    if (!clientSnap.exists) {
+      await clientRef.set({
+        clientId: visitorId,
+        fechaRegistro: now,
+        firstPurchase: null,
+        lastPurchase: null,
+        pago_completado: false,
+        stripeSessionId: null,
+        ip: req.ip || req.headers['x-forwarded-for'] || null,
+
+        firstSource: source || 'direct',
+        firstMedium: medium || 'none',
+        firstCampaign: campaign || 'none',
+
+        totalRevenue: 0,
+        totalSolicitudes: 0,
+        solicitudesPagadas: 0,
+        solicitudesNoPagadas: 0
+      });
+    }
+
+    // ─── 3) Crear submission ───────────────────────
+    const submissionRef = clientRef.collection('submissions').doc();
+    await submissionRef.set({
+      cvUrl,
+      formData: { ciudad, nombreCandidato, puesto },
+      statusPago: 'no_pagado',
+      source: source || 'direct',
+      medium: medium || 'none',
+      campaign: campaign || 'none',
+      amount: amount || 0,
+      timestamp: now
+    });
+
+    // ─── 4) Actualizar métricas en cliente ─────────
+    await clientRef.update({
+      totalSolicitudes: FieldValue.increment(1),
+      solicitudesNoPagadas: FieldValue.increment(1)
+    });
+
+    res.json({ ok: true, message: 'Solicitud guardada correctamente' });
+
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ ok: false, error: 'Error guardando la solicitud' });
+  }
+});
+app.use('/api/estudios', expressRouter);
 
 // ─── RUTA DE CHECKOUT ────────────────────────────────────
 app.post('/api/checkout', async (req, res) => {
@@ -36,21 +117,6 @@ app.post('/api/checkout', async (req, res) => {
   }
 
   try {
-    // 1) Actualiza el estudio
-    const estudioRef  = db.collection('estudios').doc(docId);
-    const estudioSnap = await estudioRef.get();
-    const estudioData = estudioSnap.data();
-    const updates = {
-      status: 'pendiente_pago',
-      tipo,
-      fecha:  admin.firestore.FieldValue.serverTimestamp()
-    };
-    if (clientId && !estudioData.clientId) {
-      updates.clientId = clientId;
-    }
-    await estudioRef.update(updates);
-
-    // 2) Crea la sesión de Stripe
     const precios = { estandar: 50000, urgente: 80000 };
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],
@@ -103,44 +169,26 @@ app.post(
       const amount   = (sess.amount_total || 0) / 100;
       const txId     = sess.payment_intent;
 
-      // ── 1) Actualiza el estudio ─────────────────────────
-      const ref  = db.collection('estudios').doc(docId);
-      const snap = await ref.get();
-      const data = snap.data();
-      const estudioUpdates = {
-        lastPurchaseDate:  admin.firestore.FieldValue.serverTimestamp(),
-        totalRevenue:      admin.firestore.FieldValue.increment(amount),
-        status:            'pagado',
-        stripeSessionId:   txId,
-        pago_completado:   admin.firestore.FieldValue.serverTimestamp()
-      };
-      if (!data.firstPurchaseDate) {
-        estudioUpdates.firstPurchaseDate = admin.firestore.FieldValue.serverTimestamp();
-      }
-      await ref.update(estudioUpdates);
+      // ── 1) Actualizar submission ─────────────────
+      const clientRef = db.collection('clientes').doc(clientId);
+      await clientRef.collection('submissions').doc(docId).update({
+        statusPago: 'pagado'
+      });
 
-      // ── 2) Gestiona la colección “customers” ────────────
-      if (clientId) {
-        const custRef  = db.collection('customers').doc(clientId);
-        const custSnap = await custRef.get();
-        if (!custSnap.exists) {
-          await custRef.set({
-            clientId,
-            firstPurchaseDate: admin.firestore.FieldValue.serverTimestamp(),
-            lastPurchaseDate:  admin.firestore.FieldValue.serverTimestamp(),
-            totalRevenue:      amount,
-            purchaseCount:     1
-          });
-        } else {
-          await custRef.update({
-            lastPurchaseDate: admin.firestore.FieldValue.serverTimestamp(),
-            totalRevenue:     admin.firestore.FieldValue.increment(amount),
-            purchaseCount:    admin.firestore.FieldValue.increment(1)
-          });
-        }
-      }
+      // ── 2) Actualizar métricas cliente ───────────
+      const clientSnap = await clientRef.get();
+      const clientData = clientSnap.data();
+      await clientRef.update({
+        pago_completado: true,
+        lastPurchase: admin.firestore.FieldValue.serverTimestamp(),
+        stripeSessionId: txId,
+        solicitudesPagadas: FieldValue.increment(1),
+        solicitudesNoPagadas: FieldValue.increment(-1),
+        totalRevenue: FieldValue.increment(amount),
+        ...(clientData.firstPurchase ? {} : { firstPurchase: admin.firestore.FieldValue.serverTimestamp() })
+      });
 
-      // ── 3) (Opcional) Envía evento a GA4 ───────────────
+      // ── 3) Evento GA4 opcional ──────────────────
       const mpUrl = `https://www.google-analytics.com/mp/collect` +
         `?measurement_id=${process.env.GA4_MEASUREMENT_ID}` +
         `&api_secret=${process.env.GA4_API_SECRET}`;
