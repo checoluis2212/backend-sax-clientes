@@ -22,7 +22,7 @@ module.exports = ({ db, bucket, FieldValue }) => {
         return res.status(400).json({ ok: false, error: 'visitorId es obligatorio' });
       }
 
-      // 🔹 IP real
+      // 🔹 IP real (Render + proxy)
       const ipCliente =
         req.headers['x-forwarded-for']?.split(',')[0]?.trim() ||
         req.ip ||
@@ -53,25 +53,21 @@ module.exports = ({ db, bucket, FieldValue }) => {
         });
       }
 
-      // 🔹 Verificar duplicado (mismo candidato, puesto y status no_pagado)
-      const lastSnap = await clientRef.collection('submissions')
-        .orderBy('timestamp', 'desc')
+      // 🔹 Verificar duplicado (mismo candidato + puesto + no_pagado)
+      const duplicateSnap = await clientRef.collection('submissions')
+        .where('formData.nombreCandidato', '==', nombreCandidato)
+        .where('formData.puesto', '==', puesto)
+        .where('statusPago', '==', 'no_pagado')
         .limit(1)
         .get();
 
-      if (!lastSnap.empty) {
-        const lastData = lastSnap.docs[0].data();
-        if (
-          lastData.formData?.nombreCandidato === nombreCandidato &&
-          lastData.formData?.puesto === puesto &&
-          lastData.statusPago === 'no_pagado'
-        ) {
-          return res.json({
-            ok: true,
-            docId: lastSnap.docs[0].id,
-            cvUrl: lastData.cvUrl
-          });
-        }
+      if (!duplicateSnap.empty) {
+        const existingDoc = duplicateSnap.docs[0];
+        return res.json({
+          ok: true,
+          docId: existingDoc.id,
+          cvUrl: existingDoc.data().cvUrl
+        });
       }
 
       // 🔹 Subir CV
@@ -97,7 +93,7 @@ module.exports = ({ db, bucket, FieldValue }) => {
         timestamp: now
       });
 
-      // Actualizar métricas
+      // Actualizar métricas cliente
       await clientRef.update({
         totalSolicitudes: FieldValue.increment(1),
         solicitudesNoPagadas: FieldValue.increment(1)
