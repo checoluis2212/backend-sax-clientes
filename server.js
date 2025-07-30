@@ -4,30 +4,86 @@ const express = require('express');
 const cors    = require('cors');
 const fetch   = require('node-fetch');
 const Stripe  = require('stripe');
-const admin   = require('firebase-admin');
-const { db, bucket } = require('./firebase');
+const { admin, db, bucket } = require('./firebase');
 
-// Inicializar Firebase Admin si no lo has hecho ya en otro sitio:
-// admin.initializeApp({ credential: admin.credential.applicationDefault() });
-
+// Inicializa Stripe
 const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
 
-const app = express();
+const app  = express();
 const PORT = process.env.PORT || 3001;
 
-// …middlewares igual que antes…
+// ─── MIDDLEWARES ────────────────────────────────────────
 
-// ─── WEBHOOK STRIPE ───────────────────────────────────────
+// CORS: permite tus dominios frontend y API
+app.use(cors({
+  origin: [
+    'https://frontend-sax-clientes.onrender.com',
+    'https://clientes.saxmexico.com'
+  ],
+  methods: ['GET','POST','OPTIONS'],
+  allowedHeaders: ['Content-Type','Authorization']
+}));
+
+// JSON parser, excepto en /webhook
+app.use((req, res, next) => {
+  if (req.path === '/webhook') return next();
+  express.json()(req, res, next);
+});
+
+// ─── RUTAS DE ESTUDIOS ───────────────────────────────────
+const estudiosRouter = require('./routes/estudios')({ db, bucket });
+app.use('/api/estudios', estudiosRouter);
+
+// ─── RUTA DE CHECKOUT ────────────────────────────────────
+app.post('/api/checkout', async (req, res) => {
+  const { docId, tipo, clientId, cac } = req.body;
+  if (!docId || !tipo) {
+    return res.status(400).json({ error: 'docId y tipo son requeridos' });
+  }
+
+  try {
+    // Marca pendiente de pago
+    await db.collection('estudios').doc(docId).update({
+      status: 'pendiente_pago',
+      tipo,
+      fecha: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    // Crea sesión de Stripe
+    const precios = { estandar: 50000, urgente: 80000 };
+    const session = await stripe.checkout.sessions.create({
+      payment_method_types: ['card'],
+      line_items: [{
+        price_data: {
+          currency: 'mxn',
+          product_data: { name: `Estudio: ${tipo}` },
+          unit_amount: precios[tipo] || precios.estandar
+        },
+        quantity: 1
+      }],
+      mode: 'payment',
+      success_url: `${process.env.FRONTEND_URL}/success?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url:  `${process.env.FRONTEND_URL}/cancel`,
+      metadata: { docId, client_id: clientId||'', cac: (cac||0).toString() }
+    });
+
+    return res.json({ checkoutUrl: session.url });
+  } catch (err) {
+    console.error('❌ Error en /api/checkout:', err);
+    return res.status(500).json({ error: 'Error al procesar el pago' });
+  }
+});
+
+// ─── WEBHOOK DE STRIPE ───────────────────────────────────
 app.post(
   '/webhook',
   express.raw({ type: 'application/json' }),
   async (req, res) => {
-    const sig = req.headers['stripe-signature'];
     let event;
     try {
       event = stripe.webhooks.constructEvent(
         req.body,
-        sig,
+        req.headers['stripe-signature'],
         process.env.STRIPE_WEBHOOK_SECRET
       );
     } catch (err) {
@@ -36,86 +92,76 @@ app.post(
     }
 
     if (event.type === 'checkout.session.completed') {
-      const session       = event.data.object;
-      const docId         = session.metadata?.docId;
-      const transactionId = session.payment_intent;
-      const amount        = session.amount_total / 100;
-      const currency      = session.currency.toUpperCase();
+      const sess = event.data.object;
+      const docId = sess.metadata.docId;
+      const amount = sess.amount_total/100;
+      const txId = sess.payment_intent;
 
       if (!docId) {
         console.warn('⚠️ Falta docId en metadata');
-        return res.status(400).send('Falta docId en metadata');
+        return res.status(400).send('Missing docId');
       }
 
-      const estudioRef = db.collection('estudios').doc(docId);
-
-      // 1) Obtenemos el documento para leer firstPurchaseDate
-      const snap = await estudioRef.get();
+      const ref = db.collection('estudios').doc(docId);
+      const snap = await ref.get();
       if (!snap.exists) {
         console.error('❌ Documento no existe:', docId);
-        return res.status(404).send('Documento no encontrado');
+        return res.status(404).send('Not found');
       }
       const data = snap.data();
 
-      // 2) Preparamos los campos a actualizar
-      const updates = {};
-      // Solo la primera vez
+      // Prepara actualizaciones de LTV
+      const updates = {
+        lastPurchaseDate:  admin.firestore.FieldValue.serverTimestamp(),
+        totalRevenue:      admin.firestore.FieldValue.increment(amount),
+        status:            'pagado',
+        stripeSessionId:   txId,
+        pago_completado:   admin.firestore.FieldValue.serverTimestamp()
+      };
       if (!data.firstPurchaseDate) {
         updates.firstPurchaseDate = admin.firestore.FieldValue.serverTimestamp();
       }
-      // Siempre actualizamos último movimiento
-      updates.lastPurchaseDate  = admin.firestore.FieldValue.serverTimestamp();
-      // Acumulamos el revenue
-      updates.totalRevenue      = admin.firestore.FieldValue.increment(amount);
-      // Cambiamos estado y guardamos meta
-      updates.status            = 'pagado';
-      updates.stripeSessionId   = transactionId;
-      updates.pago_completado   = admin.firestore.FieldValue.serverTimestamp();
 
-      // 3) Aplicamos la actualización
+      // Aplica update
       try {
-        await estudioRef.update(updates);
-        console.log(`✅ Firestore actualizado LTV para estudio ${docId}`);
+        await ref.update(updates);
+        console.log('✅ Firestore LTV updated for', docId);
       } catch (e) {
-        console.error('❌ Error actualizando Firestore:', e);
-        return res.status(500).send('Error actualizando Firestore');
+        console.error('❌ Error updating Firestore:', e);
+        return res.status(500).send('Firestore error');
       }
 
-      // 4) Enviar evento “purchase” a GA4
-      const mpUrl = `https://www.google-analytics.com/mp/collect`
-        + `?measurement_id=${process.env.GA4_MEASUREMENT_ID}`
-        + `&api_secret=${process.env.GA4_API_SECRET}`;
-      const mpPayload = {
-        client_id: transactionId,
+      // Enviar a GA4
+      const mpUrl = `https://www.google-analytics.com/mp/collect` +
+        `?measurement_id=${process.env.GA4_MEASUREMENT_ID}` +
+        `&api_secret=${process.env.GA4_API_SECRET}`;
+      const payload = {
+        client_id: sess.metadata.client_id || txId,
         events: [{
           name: 'purchase',
-          params: {
-            transaction_id: transactionId,
-            value: amount,
-            currency
-          }
+          params: { transaction_id: txId, value: amount, currency: sess.currency.toUpperCase() }
         }]
       };
       try {
-        const resp = await fetch(mpUrl, {
+        const r = await fetch(mpUrl, {
           method: 'POST',
           headers: {'Content-Type':'application/json'},
-          body: JSON.stringify(mpPayload)
+          body: JSON.stringify(payload)
         });
-        console.log(resp.status === 204
-          ? '✅ Evento “purchase” enviado a GA4'
-          : '❌ Error GA4:', await resp.text());
+        console.log(r.status===204 ? '✅ GA4 event sent' : '❌ GA4 error', await r.text());
       } catch (e) {
-        console.error('❌ Falló envío a GA4:', e);
+        console.error('❌ GA4 send failed:', e);
       }
     }
 
-    // 5) Respondemos rápido a Stripe
-    res.status(200).send('Evento recibido');
+    res.status(200).send('OK');
   }
 );
 
-// … arranque del servidor igual que antes …
+// ─── RUTA HOME ───────────────────────────────────────────
+app.get('/', (_req, res) => res.send('🚀 Server up!'));
+
+// ─── START SERVER ────────────────────────────────────────
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 Backend escuchando en http://0.0.0.0:${PORT}`);
+  console.log(`🚀 Listening on port ${PORT}`);
 });
