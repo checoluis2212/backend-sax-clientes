@@ -4,6 +4,7 @@ const express = require('express');
 const cors    = require('cors');
 const fetch   = require('node-fetch');
 const Stripe  = require('stripe');
+const multer  = require('multer');
 const { admin, db, bucket, FieldValue } = require('./firebase');
 
 const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
@@ -25,11 +26,9 @@ app.use((req, res, next) => {
 });
 
 // ─── RUTA DE ESTUDIOS ───────────────────────────────────
-const expressRouter = require('express').Router();
-const multer = require('multer');
 const upload = multer({ storage: multer.memoryStorage() });
 
-expressRouter.post('/', upload.single('cv'), async (req, res) => {
+app.post('/api/estudios', upload.single('cv'), async (req, res) => {
   try {
     const {
       visitorId, // clientId
@@ -38,8 +37,8 @@ expressRouter.post('/', upload.single('cv'), async (req, res) => {
       nombreSolicitante,
       nombreCandidato, ciudad, puesto,
       tipo,
-      source, medium, campaign, // desde frontend
-      amount                     // monto de esta solicitud
+      source, medium, campaign,
+      amount
     } = req.body;
 
     if (!visitorId) {
@@ -100,18 +99,20 @@ expressRouter.post('/', upload.single('cv'), async (req, res) => {
       solicitudesNoPagadas: FieldValue.increment(1)
     });
 
-    res.json({ ok: true, message: 'Solicitud guardada correctamente' });
+    // ─── 5) Responder con docId y cvUrl ────────────
+    res.json({ ok: true, docId: submissionRef.id, cvUrl });
 
   } catch (error) {
-    console.error(error);
+    console.error('❌ Error en /api/estudios:', error);
     res.status(500).json({ ok: false, error: 'Error guardando la solicitud' });
   }
 });
-app.use('/api/estudios', expressRouter);
 
 // ─── RUTA DE CHECKOUT ────────────────────────────────────
 app.post('/api/checkout', async (req, res) => {
   const { docId, tipo, clientId, cac } = req.body;
+  console.log('📥 Checkout body:', req.body);
+
   if (!docId || !tipo) {
     return res.status(400).json({ error: 'docId y tipo son requeridos' });
   }
@@ -169,8 +170,9 @@ app.post(
       const amount   = (sess.amount_total || 0) / 100;
       const txId     = sess.payment_intent;
 
-      // ── 1) Actualizar submission ─────────────────
       const clientRef = db.collection('clientes').doc(clientId);
+
+      // ── 1) Actualizar submission ─────────────────
       await clientRef.collection('submissions').doc(docId).update({
         statusPago: 'pagado'
       });
