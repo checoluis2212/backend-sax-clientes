@@ -22,18 +22,30 @@ module.exports = ({ db, bucket, FieldValue }) => {
         return res.status(400).json({ ok: false, error: 'visitorId es obligatorio' });
       }
 
-      // 🔹 Obtener IP real
+      // 🔹 Obtener IP real del cliente
       const ipCliente =
-        req.headers['x-forwarded-for']?.split(',')[0].trim() ||
+        req.headers['x-forwarded-for']?.split(',')[0]?.trim() ||
         req.ip ||
         req.socket?.remoteAddress ||
         null;
+
+      // ─── 1) Subir CV si existe ─────────────────────
+      let cvUrl = '';
+      if (req.file) {
+        const fileName = `cvs/${visitorId}_${Date.now()}_${req.file.originalname}`;
+        const file = bucket.file(fileName);
+        await file.save(req.file.buffer, { contentType: req.file.mimetype });
+
+        // 🔹 Hacer archivo público para descarga directa
+        await file.makePublic();
+        cvUrl = `https://storage.googleapis.com/${bucket.name}/${fileName}`;
+      }
 
       const clientRef = db.collection('clientes').doc(visitorId);
       const clientSnap = await clientRef.get();
       const now = new Date().toISOString();
 
-      // ─── 1) Crear cliente si no existe ─────────────
+      // ─── 2) Crear cliente si no existe ─────────────
       if (!clientSnap.exists) {
         await clientRef.set({
           clientId: visitorId,
@@ -55,28 +67,28 @@ module.exports = ({ db, bucket, FieldValue }) => {
         });
       }
 
-      // ─── 2) Revisar si ya existe submission pendiente ─────────────
-      const existingSub = await clientRef.collection('submissions')
-        .where('statusPago', '==', 'no_pagado')
+      // ─── 3) Prevenir duplicado: validar último submission ─────────
+      const subsSnap = await clientRef.collection('submissions')
+        .orderBy('timestamp', 'desc')
         .limit(1)
         .get();
 
-      if (!existingSub.empty) {
-        console.log('⚠️ Submission ya pendiente, no se crea nueva');
-        return res.json({ ok: true, docId: existingSub.docs[0].id });
+      if (!subsSnap.empty) {
+        const lastData = subsSnap.docs[0].data();
+        if (
+          lastData.formData?.nombreCandidato === nombreCandidato &&
+          lastData.formData?.puesto === puesto &&
+          lastData.statusPago === 'no_pagado'
+        ) {
+          return res.status(200).json({
+            ok: true,
+            docId: subsSnap.docs[0].id,
+            cvUrl: lastData.cvUrl
+          });
+        }
       }
 
-      // ─── 3) Subir CV si existe ─────────────────────
-      let cvUrl = '';
-      if (req.file) {
-        const fileName = `cvs/${visitorId}_${Date.now()}_${req.file.originalname}`;
-        const file = bucket.file(fileName);
-        await file.save(req.file.buffer, { contentType: req.file.mimetype });
-        await file.makePublic(); // 🔹 Hacerlo público
-        cvUrl = `https://storage.googleapis.com/${bucket.name}/${fileName}`;
-      }
-
-      // ─── 4) Crear nueva submission ───────────────────────
+      // ─── 4) Crear submission ───────────────────────
       const submissionRef = clientRef.collection('submissions').doc();
       await submissionRef.set({
         cvUrl,
