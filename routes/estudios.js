@@ -1,6 +1,5 @@
-// src/routes/estudios.js
 const express = require('express');
-const multer  = require('multer');
+const multer = require('multer');
 
 module.exports = ({ db, bucket, FieldValue }) => {
   const router = express.Router();
@@ -8,70 +7,80 @@ module.exports = ({ db, bucket, FieldValue }) => {
 
   router.post('/', upload.single('cv'), async (req, res) => {
     try {
-      // 1) Destructure del body
       const {
-        visitorId,
+        visitorId, // clientId
         nombre, apellido, empresa,
         telefono, email,
         nombreSolicitante,
         nombreCandidato, ciudad, puesto,
-        tipo
+        tipo,
+        source, medium, campaign, // desde frontend
+        amount                     // monto de esta solicitud
       } = req.body;
 
       if (!visitorId) {
         return res.status(400).json({ ok: false, error: 'visitorId es obligatorio' });
       }
 
-      // 2) Si llega un archivo CV, súbelo y obtén su URL
+      // ─── 1) Guardar archivo CV si aplica ───────────────
       let cvUrl = '';
       if (req.file) {
-        const fileName = `cv/${visitorId}/${Date.now()}_${req.file.originalname}`;
-        const fileRef = bucket.file(fileName);
-        await fileRef.save(req.file.buffer, {
-          metadata: { contentType: req.file.mimetype }
-        });
-        const [url] = await fileRef.getSignedUrl({
-          action: 'read',
-          expires: '03-01-2030'
-        });
-        cvUrl = url;
+        const fileName = `cvs/${visitorId}_${Date.now()}_${req.file.originalname}`;
+        const file = bucket.file(fileName);
+        await file.save(req.file.buffer, { contentType: req.file.mimetype });
+        cvUrl = `https://storage.googleapis.com/${bucket.name}/${fileName}`;
       }
 
-      // 3) Construye formData solo con campos definidos
-      const raw = {
-        nombre, apellido, empresa,
-        telefono, email,
-        nombreSolicitante,
-        nombreCandidato, ciudad, puesto,
-        tipo
-      };
-      const formData = Object.fromEntries(
-        Object.entries(raw).filter(([_, v]) => v !== undefined && v !== '')
-      );
+      const clientRef = db.collection('clientes').doc(visitorId);
+      const clientSnap = await clientRef.get();
+      const now = new Date().toISOString();
 
-      // 4) Prepara el objeto que vamos a guardar
-      const submission = {
-        timestamp: new Date(),
-        formData,
-        cvUrl
-      };
+      // ─── 2) Crear cliente si no existe ────────────────
+      if (!clientSnap.exists) {
+        await clientRef.set({
+          clientId: visitorId,
+          fechaRegistro: now,
+          firstPurchase: null,
+          lastPurchase: null,
+          pago_completado: false,
+          stripeSessionId: null,
+          ip: req.ip || req.headers['x-forwarded-for'] || null,
 
-      // 5) Upsert en Firestore usando visitorId como ID de doc
-      const userRef = db.collection('estudios').doc(visitorId);
-      await userRef.set({
-        visitorId,
-        submissions: FieldValue.arrayUnion(submission)
-      }, { merge: true });
+          firstSource: source || 'direct',
+          firstMedium: medium || 'none',
+          firstCampaign: campaign || 'none',
 
-      // 6) Responde OK e incluye docId
-      return res.status(200).json({
-        ok:    true,
-        docId: visitorId,  // aquí incluimos el ID del documento
-        cvUrl
+          totalRevenue: 0,
+          totalSolicitudes: 0,
+          solicitudesPagadas: 0,
+          solicitudesNoPagadas: 0
+        });
+      }
+
+      // ─── 3) Crear submission inicial ──────────────────
+      const submissionRef = clientRef.collection('submissions').doc();
+      await submissionRef.set({
+        cvUrl,
+        formData: { ciudad, nombreCandidato, puesto },
+        statusPago: 'no_pagado',
+        source: source || 'direct',
+        medium: medium || 'none',
+        campaign: campaign || 'none',
+        amount: amount || 0,
+        timestamp: now
       });
-    } catch (err) {
-      console.error('Error en POST /api/estudios:', err);
-      return res.status(500).json({ ok: false, error: err.message });
+
+      // ─── 4) Actualizar contadores en cliente ──────────
+      await clientRef.update({
+        totalSolicitudes: FieldValue.increment(1),
+        solicitudesNoPagadas: FieldValue.increment(1)
+      });
+
+      res.json({ ok: true, message: 'Solicitud guardada correctamente' });
+
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ ok: false, error: 'Error guardando la solicitud' });
     }
   });
 
