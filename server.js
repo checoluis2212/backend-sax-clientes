@@ -4,7 +4,7 @@ const express = require('express');
 const cors    = require('cors');
 const fetch   = require('node-fetch');
 const Stripe  = require('stripe');
-const { admin, db, bucket } = require('./firebase');
+const { admin, db, bucket, FieldValue } = require('./firebase');
 
 const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
 const app    = express();
@@ -25,7 +25,7 @@ app.use((req, res, next) => {
 });
 
 // ─── RUTAS DE ESTUDIOS ───────────────────────────────────
-const estudiosRouter = require('./routes/estudios')({ db, bucket });
+const estudiosRouter = require('./routes/estudios')({ db, bucket, FieldValue });
 app.use('/api/estudios', estudiosRouter);
 
 // ─── RUTA DE CHECKOUT ────────────────────────────────────
