@@ -1,3 +1,4 @@
+// src/routes/estudios.js
 const express = require('express');
 const multer  = require('multer');
 
@@ -13,16 +14,17 @@ module.exports = ({ db, bucket }) => {
       let cvUrl = '';
       if (file) {
         const fileName = `cv/${Date.now()}_${file.originalname}`;
-        const fileRef  = bucket.file(fileName);
-        await fileRef.save(file.buffer, { metadata: { contentType: file.mimetype } });
-        const [url]    = await fileRef.getSignedUrl({
+        const fileRef = bucket.file(fileName);
+        await fileRef.save(file.buffer, {
+          metadata: { contentType: file.mimetype }
+        });
+        const [url] = await fileRef.getSignedUrl({
           action: 'read',
           expires: '03-01-2030'
         });
         cvUrl = url;
       }
 
-      // crea el doc
       const docRef = await db.collection('estudios').add({
         nombreCandidato,
         ciudad,
@@ -32,17 +34,14 @@ module.exports = ({ db, bucket }) => {
         status: 'pendiente_pago'
       });
 
-      // OK: devolvemos sólo docId y cvUrl con 200
       return res.status(200).json({
-        docId:  docRef.id,
+        ok: true,
+        docId: docRef.id,
         cvUrl
       });
     } catch (err) {
-      console.error('❌ Error guardando estudio:', err);
-      // KO: devolvemos 500 + mensaje
-      return res.status(500).json({
-        error: err.message
-      });
+      console.error('Error guardando estudio:', err);
+      return res.status(500).json({ ok: false, error: err.message });
     }
   });
 
