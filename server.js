@@ -6,11 +6,9 @@ const fetch   = require('node-fetch');
 const Stripe  = require('stripe');
 const { admin, db, bucket } = require('./firebase');
 
-// Inicializa Stripe
 const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
-
-const app  = express();
-const PORT = process.env.PORT || 3001;
+const app    = express();
+const PORT   = process.env.PORT || 3001;
 
 // ─── MIDDLEWARES ────────────────────────────────────────
 app.use(cors({
@@ -21,8 +19,6 @@ app.use(cors({
   methods: ['GET','POST','OPTIONS'],
   allowedHeaders: ['Content-Type','Authorization']
 }));
-
-// JSON parser, excepto en /webhook
 app.use((req, res, next) => {
   if (req.path === '/webhook') return next();
   express.json()(req, res, next);
@@ -40,14 +36,21 @@ app.post('/api/checkout', async (req, res) => {
   }
 
   try {
-    // Marca pendiente de pago
-    await db.collection('estudios').doc(docId).update({
+    // 1) Actualiza el estudio
+    const estudioRef  = db.collection('estudios').doc(docId);
+    const estudioSnap = await estudioRef.get();
+    const estudioData = estudioSnap.data();
+    const updates = {
       status: 'pendiente_pago',
       tipo,
-      fecha: admin.firestore.FieldValue.serverTimestamp()
-    });
+      fecha:  admin.firestore.FieldValue.serverTimestamp()
+    };
+    if (clientId && !estudioData.clientId) {
+      updates.clientId = clientId;
+    }
+    await estudioRef.update(updates);
 
-    // Crea sesión de Stripe
+    // 2) Crea la sesión de Stripe
     const precios = { estandar: 50000, urgente: 80000 };
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],
@@ -60,9 +63,13 @@ app.post('/api/checkout', async (req, res) => {
         quantity: 1
       }],
       mode: 'payment',
-      // ← Aquí cambiasremos la ruta de éxito a /compra
-      success_url: `https://saxmexico.com/compra`,
-      metadata: { docId, client_id: clientId||'', cac: (cac||0).toString() }
+      success_url: `${process.env.FRONTEND_URL}/compra?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url:  `${process.env.FRONTEND_URL}/`,
+      metadata: {
+        docId,
+        clientId: clientId || '',
+        cac:      (cac || 0).toString()
+      }
     });
 
     return res.json({ checkoutUrl: session.url });
@@ -90,26 +97,17 @@ app.post(
     }
 
     if (event.type === 'checkout.session.completed') {
-      const sess  = event.data.object;
-      const docId = sess.metadata.docId;
-      const amount = (sess.amount_total||0) / 100;
-      const txId   = sess.payment_intent;
+      const sess     = event.data.object;
+      const docId    = sess.metadata.docId;
+      const clientId = sess.metadata.clientId;
+      const amount   = (sess.amount_total || 0) / 100;
+      const txId     = sess.payment_intent;
 
-      if (!docId) {
-        console.warn('⚠️ Falta docId en metadata');
-        return res.status(400).send('Missing docId');
-      }
-
+      // ── 1) Actualiza el estudio ─────────────────────────
       const ref  = db.collection('estudios').doc(docId);
       const snap = await ref.get();
-      if (!snap.exists) {
-        console.error('❌ Documento no existe:', docId);
-        return res.status(404).send('Not found');
-      }
       const data = snap.data();
-
-      // Prepara actualizaciones de LTV
-      const updates = {
+      const estudioUpdates = {
         lastPurchaseDate:  admin.firestore.FieldValue.serverTimestamp(),
         totalRevenue:      admin.firestore.FieldValue.increment(amount),
         status:            'pagado',
@@ -117,29 +115,43 @@ app.post(
         pago_completado:   admin.firestore.FieldValue.serverTimestamp()
       };
       if (!data.firstPurchaseDate) {
-        updates.firstPurchaseDate = admin.firestore.FieldValue.serverTimestamp();
+        estudioUpdates.firstPurchaseDate = admin.firestore.FieldValue.serverTimestamp();
+      }
+      await ref.update(estudioUpdates);
+
+      // ── 2) Gestiona la colección “customers” ────────────
+      if (clientId) {
+        const custRef  = db.collection('customers').doc(clientId);
+        const custSnap = await custRef.get();
+        if (!custSnap.exists) {
+          await custRef.set({
+            clientId,
+            firstPurchaseDate: admin.firestore.FieldValue.serverTimestamp(),
+            lastPurchaseDate:  admin.firestore.FieldValue.serverTimestamp(),
+            totalRevenue:      amount,
+            purchaseCount:     1
+          });
+        } else {
+          await custRef.update({
+            lastPurchaseDate: admin.firestore.FieldValue.serverTimestamp(),
+            totalRevenue:     admin.firestore.FieldValue.increment(amount),
+            purchaseCount:    admin.firestore.FieldValue.increment(1)
+          });
+        }
       }
 
-      try {
-        await ref.update(updates);
-        console.log('✅ Firestore LTV updated for', docId);
-      } catch (e) {
-        console.error('❌ Error updating Firestore:', e);
-        return res.status(500).send('Firestore error');
-      }
-
-      // Enviar evento “purchase” a GA4 (opcional)
+      // ── 3) (Opcional) Envía evento a GA4 ───────────────
       const mpUrl = `https://www.google-analytics.com/mp/collect` +
         `?measurement_id=${process.env.GA4_MEASUREMENT_ID}` +
         `&api_secret=${process.env.GA4_API_SECRET}`;
       const payload = {
-        client_id: sess.metadata.client_id || txId,
+        client_id: clientId || txId,
         events: [{
           name: 'purchase',
           params: {
             transaction_id: txId,
-            value: amount,
-            currency: sess.currency.toUpperCase()
+            value:          amount,
+            currency:       sess.currency.toUpperCase()
           }
         }]
       };
@@ -161,8 +173,6 @@ app.post(
 
 // ─── RUTA HOME ───────────────────────────────────────────
 app.get('/', (_req, res) => res.send('🚀 Server up!'));
-
-// ─── START SERVER ────────────────────────────────────────
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Listening on port ${PORT}`);
 });
