@@ -22,7 +22,7 @@ module.exports = ({ db, bucket, FieldValue }) => {
         return res.status(400).json({ ok: false, error: 'visitorId es obligatorio' });
       }
 
-      // 🔹 IP real (Render + proxy)
+      // 🔹 Obtener IP real (Render + proxy)
       const ipCliente =
         req.headers['x-forwarded-for']?.split(',')[0]?.trim() ||
         req.ip ||
@@ -33,7 +33,7 @@ module.exports = ({ db, bucket, FieldValue }) => {
       const clientSnap = await clientRef.get();
       const now = new Date().toISOString();
 
-      // Crear cliente si no existe
+      // ─── 1) Crear cliente si no existe ─────────────
       if (!clientSnap.exists) {
         await clientRef.set({
           clientId: visitorId,
@@ -53,10 +53,10 @@ module.exports = ({ db, bucket, FieldValue }) => {
         });
       }
 
-      // 🔹 Verificar duplicado (mismo candidato + puesto + no_pagado)
+      // ─── 2) Verificar duplicado ────────────────────
       const duplicateSnap = await clientRef.collection('submissions')
-        .where('formData.nombreCandidato', '==', nombreCandidato)
-        .where('formData.puesto', '==', puesto)
+        .where('nombreCandidato', '==', nombreCandidato)
+        .where('puesto', '==', puesto)
         .where('statusPago', '==', 'no_pagado')
         .limit(1)
         .get();
@@ -70,21 +70,23 @@ module.exports = ({ db, bucket, FieldValue }) => {
         });
       }
 
-      // 🔹 Subir CV
+      // ─── 3) Subir CV ───────────────────────────────
       let cvUrl = '';
       if (req.file) {
         const fileName = `cvs/${visitorId}_${Date.now()}_${req.file.originalname}`;
         const file = bucket.file(fileName);
         await file.save(req.file.buffer, { contentType: req.file.mimetype });
-        await file.makePublic();
+        await file.makePublic(); // 🔹 Permitir descarga
         cvUrl = `https://storage.googleapis.com/${bucket.name}/${fileName}`;
       }
 
-      // Crear submission
+      // ─── 4) Crear submission ───────────────────────
       const submissionRef = clientRef.collection('submissions').doc();
       await submissionRef.set({
         cvUrl,
         formData: { ciudad, nombreCandidato, puesto },
+        nombreCandidato, // 🔹 Campos planos para queries
+        puesto,          // 🔹 Campos planos para queries
         statusPago: 'no_pagado',
         source: source || 'direct',
         medium: medium || 'none',
@@ -93,12 +95,13 @@ module.exports = ({ db, bucket, FieldValue }) => {
         timestamp: now
       });
 
-      // Actualizar métricas cliente
+      // ─── 5) Actualizar métricas cliente ────────────
       await clientRef.update({
         totalSolicitudes: FieldValue.increment(1),
         solicitudesNoPagadas: FieldValue.increment(1)
       });
 
+      // ─── 6) Respuesta ──────────────────────────────
       res.json({ ok: true, docId: submissionRef.id, cvUrl });
 
     } catch (error) {
