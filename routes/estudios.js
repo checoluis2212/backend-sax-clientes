@@ -9,11 +9,7 @@ module.exports = ({ db, bucket, FieldValue }) => {
     try {
       const {
         visitorId,
-        nombre, apellido, empresa,
-        telefono, email,
-        nombreSolicitante,
         nombreCandidato, ciudad, puesto,
-        tipo,
         source, medium, campaign,
         amount
       } = req.body;
@@ -22,7 +18,7 @@ module.exports = ({ db, bucket, FieldValue }) => {
         return res.status(400).json({ ok: false, error: 'visitorId es obligatorio' });
       }
 
-      // 🔹 Obtener IP real (Render + proxy)
+      // 🔹 Obtener IP real
       const ipCliente =
         req.headers['x-forwarded-for']?.split(',')[0]?.trim() ||
         req.ip ||
@@ -33,7 +29,7 @@ module.exports = ({ db, bucket, FieldValue }) => {
       const clientSnap = await clientRef.get();
       const now = new Date().toISOString();
 
-      // ─── 1) Crear cliente si no existe ─────────────
+      // ─── Crear cliente si no existe ─────────────
       if (!clientSnap.exists) {
         await clientRef.set({
           clientId: visitorId,
@@ -53,11 +49,13 @@ module.exports = ({ db, bucket, FieldValue }) => {
         });
       }
 
-      // ─── 2) Verificar duplicado ────────────────────
+      // ─── Prevenir duplicados recientes (última hora) ─────────────
+      const unaHoraAtras = new Date(Date.now() - 60 * 60 * 1000).toISOString();
       const duplicateSnap = await clientRef.collection('submissions')
         .where('nombreCandidato', '==', nombreCandidato)
         .where('puesto', '==', puesto)
         .where('statusPago', '==', 'no_pagado')
+        .where('timestamp', '>=', unaHoraAtras)
         .limit(1)
         .get();
 
@@ -70,23 +68,23 @@ module.exports = ({ db, bucket, FieldValue }) => {
         });
       }
 
-      // ─── 3) Subir CV ───────────────────────────────
+      // ─── Subir CV ───────────────────────────────
       let cvUrl = '';
       if (req.file) {
         const fileName = `cvs/${visitorId}_${Date.now()}_${req.file.originalname}`;
         const file = bucket.file(fileName);
         await file.save(req.file.buffer, { contentType: req.file.mimetype });
-        await file.makePublic(); // 🔹 Permitir descarga
+        await file.makePublic();
         cvUrl = `https://storage.googleapis.com/${bucket.name}/${fileName}`;
       }
 
-      // ─── 4) Crear submission ───────────────────────
+      // ─── Crear submission ───────────────────────
       const submissionRef = clientRef.collection('submissions').doc();
       await submissionRef.set({
         cvUrl,
         formData: { ciudad, nombreCandidato, puesto },
-        nombreCandidato, // 🔹 Campos planos para queries
-        puesto,          // 🔹 Campos planos para queries
+        nombreCandidato,
+        puesto,
         statusPago: 'no_pagado',
         source: source || 'direct',
         medium: medium || 'none',
@@ -95,13 +93,12 @@ module.exports = ({ db, bucket, FieldValue }) => {
         timestamp: now
       });
 
-      // ─── 5) Actualizar métricas cliente ────────────
+      // ─── Actualizar métricas cliente ────────────
       await clientRef.update({
         totalSolicitudes: FieldValue.increment(1),
         solicitudesNoPagadas: FieldValue.increment(1)
       });
 
-      // ─── 6) Respuesta ──────────────────────────────
       res.json({ ok: true, docId: submissionRef.id, cvUrl });
 
     } catch (error) {
