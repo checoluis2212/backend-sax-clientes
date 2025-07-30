@@ -22,7 +22,7 @@ module.exports = ({ db, bucket, FieldValue }) => {
         return res.status(400).json({ ok: false, error: 'visitorId es obligatorio' });
       }
 
-      // ─── 1) Guardar archivo CV si aplica ───────────────
+      // ─── 1) Subir CV si existe ─────────────────────
       let cvUrl = '';
       if (req.file) {
         const fileName = `cvs/${visitorId}_${Date.now()}_${req.file.originalname}`;
@@ -35,7 +35,7 @@ module.exports = ({ db, bucket, FieldValue }) => {
       const clientSnap = await clientRef.get();
       const now = new Date().toISOString();
 
-      // ─── 2) Crear cliente si no existe ────────────────
+      // ─── 2) Crear cliente si no existe ─────────────
       if (!clientSnap.exists) {
         await clientRef.set({
           clientId: visitorId,
@@ -57,7 +57,7 @@ module.exports = ({ db, bucket, FieldValue }) => {
         });
       }
 
-      // ─── 3) Crear submission inicial ──────────────────
+      // ─── 3) Crear submission ───────────────────────
       const submissionRef = clientRef.collection('submissions').doc();
       await submissionRef.set({
         cvUrl,
@@ -70,7 +70,7 @@ module.exports = ({ db, bucket, FieldValue }) => {
         timestamp: now
       });
 
-      // ─── 4) Actualizar contadores en cliente ──────────
+      // ─── 4) Actualizar métricas en cliente ─────────
       await clientRef.update({
         totalSolicitudes: FieldValue.increment(1),
         solicitudesNoPagadas: FieldValue.increment(1)
