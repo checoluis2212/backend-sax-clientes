@@ -37,27 +37,33 @@ module.exports = ({ db, bucket, FieldValue }) => {
         cvUrl = url;
       }
 
-      // 3) Prepara el objeto que vamos a guardar en el array submissions
+      // 3) Construye formData solo con campos definidos
+      const raw = {
+        nombre, apellido, empresa,
+        telefono, email,
+        nombreSolicitante,
+        nombreCandidato, ciudad, puesto,
+        tipo
+      };
+      const formData = Object.fromEntries(
+        Object.entries(raw).filter(([_, v]) => v !== undefined && v !== '')
+      );
+
+      // 4) Prepara el objeto que vamos a guardar
       const submission = {
         timestamp: new Date(),
-        formData: {
-          nombre, apellido, empresa,
-          telefono, email,
-          nombreSolicitante,
-          nombreCandidato, ciudad, puesto,
-          tipo
-        },
+        formData,
         cvUrl
       };
 
-      // 4) Upsert en Firestore usando visitorId como ID de doc
+      // 5) Upsert en Firestore usando visitorId como ID de doc
       const userRef = db.collection('estudios').doc(visitorId);
       await userRef.set({
         visitorId,
         submissions: FieldValue.arrayUnion(submission)
       }, { merge: true });
 
-      // 5) Responde OK
+      // 6) Responde OK
       return res.status(200).json({ ok: true, cvUrl });
     } catch (err) {
       console.error('Error en POST /api/estudios:', err);
