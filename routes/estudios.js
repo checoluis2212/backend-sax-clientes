@@ -22,26 +22,18 @@ module.exports = ({ db, bucket, FieldValue }) => {
         return res.status(400).json({ ok: false, error: 'visitorId es obligatorio' });
       }
 
-      // 🔹 Obtener IP real del cliente
+      // 🔹 Obtener IP real
       const ipCliente =
-        req.headers['x-forwarded-for']?.split(',').shift()?.trim() ||
+        req.headers['x-forwarded-for']?.split(',')[0].trim() ||
+        req.ip ||
         req.socket?.remoteAddress ||
         null;
-
-      // ─── 1) Subir CV si existe ─────────────────────
-      let cvUrl = '';
-      if (req.file) {
-        const fileName = `cvs/${visitorId}_${Date.now()}_${req.file.originalname}`;
-        const file = bucket.file(fileName);
-        await file.save(req.file.buffer, { contentType: req.file.mimetype });
-        cvUrl = `https://storage.googleapis.com/${bucket.name}/${fileName}`;
-      }
 
       const clientRef = db.collection('clientes').doc(visitorId);
       const clientSnap = await clientRef.get();
       const now = new Date().toISOString();
 
-      // ─── 2) Crear cliente si no existe ─────────────
+      // ─── 1) Crear cliente si no existe ─────────────
       if (!clientSnap.exists) {
         await clientRef.set({
           clientId: visitorId,
@@ -50,7 +42,7 @@ module.exports = ({ db, bucket, FieldValue }) => {
           lastPurchase: null,
           pago_completado: false,
           stripeSessionId: null,
-          ip: ipCliente, // 🔹 IP real
+          ip: ipCliente,
 
           firstSource: source || 'direct',
           firstMedium: medium || 'none',
@@ -63,7 +55,28 @@ module.exports = ({ db, bucket, FieldValue }) => {
         });
       }
 
-      // ─── 3) Crear submission ───────────────────────
+      // ─── 2) Revisar si ya existe submission pendiente ─────────────
+      const existingSub = await clientRef.collection('submissions')
+        .where('statusPago', '==', 'no_pagado')
+        .limit(1)
+        .get();
+
+      if (!existingSub.empty) {
+        console.log('⚠️ Submission ya pendiente, no se crea nueva');
+        return res.json({ ok: true, docId: existingSub.docs[0].id });
+      }
+
+      // ─── 3) Subir CV si existe ─────────────────────
+      let cvUrl = '';
+      if (req.file) {
+        const fileName = `cvs/${visitorId}_${Date.now()}_${req.file.originalname}`;
+        const file = bucket.file(fileName);
+        await file.save(req.file.buffer, { contentType: req.file.mimetype });
+        await file.makePublic(); // 🔹 Hacerlo público
+        cvUrl = `https://storage.googleapis.com/${bucket.name}/${fileName}`;
+      }
+
+      // ─── 4) Crear nueva submission ───────────────────────
       const submissionRef = clientRef.collection('submissions').doc();
       await submissionRef.set({
         cvUrl,
@@ -76,13 +89,13 @@ module.exports = ({ db, bucket, FieldValue }) => {
         timestamp: now
       });
 
-      // ─── 4) Actualizar métricas en cliente ─────────
+      // ─── 5) Actualizar métricas en cliente ─────────
       await clientRef.update({
         totalSolicitudes: FieldValue.increment(1),
         solicitudesNoPagadas: FieldValue.increment(1)
       });
 
-      // ─── 5) Responder con docId y cvUrl ────────────
+      // ─── 6) Responder con docId y cvUrl ────────────
       res.json({ ok: true, docId: submissionRef.id, cvUrl });
 
     } catch (error) {
