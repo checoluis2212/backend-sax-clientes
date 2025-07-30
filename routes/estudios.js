@@ -8,7 +8,7 @@ module.exports = ({ db, bucket, FieldValue }) => {
   router.post('/', upload.single('cv'), async (req, res) => {
     try {
       const {
-        visitorId, // clientId
+        visitorId,
         nombre, apellido, empresa,
         telefono, email,
         nombreSolicitante,
@@ -22,30 +22,18 @@ module.exports = ({ db, bucket, FieldValue }) => {
         return res.status(400).json({ ok: false, error: 'visitorId es obligatorio' });
       }
 
-      // 🔹 Obtener IP real del cliente
+      // 🔹 IP real
       const ipCliente =
         req.headers['x-forwarded-for']?.split(',')[0]?.trim() ||
         req.ip ||
         req.socket?.remoteAddress ||
         null;
 
-      // ─── 1) Subir CV si existe ─────────────────────
-      let cvUrl = '';
-      if (req.file) {
-        const fileName = `cvs/${visitorId}_${Date.now()}_${req.file.originalname}`;
-        const file = bucket.file(fileName);
-        await file.save(req.file.buffer, { contentType: req.file.mimetype });
-
-        // 🔹 Hacer archivo público para descarga directa
-        await file.makePublic();
-        cvUrl = `https://storage.googleapis.com/${bucket.name}/${fileName}`;
-      }
-
       const clientRef = db.collection('clientes').doc(visitorId);
       const clientSnap = await clientRef.get();
       const now = new Date().toISOString();
 
-      // ─── 2) Crear cliente si no existe ─────────────
+      // Crear cliente si no existe
       if (!clientSnap.exists) {
         await clientRef.set({
           clientId: visitorId,
@@ -55,11 +43,9 @@ module.exports = ({ db, bucket, FieldValue }) => {
           pago_completado: false,
           stripeSessionId: null,
           ip: ipCliente,
-
           firstSource: source || 'direct',
           firstMedium: medium || 'none',
           firstCampaign: campaign || 'none',
-
           totalRevenue: 0,
           totalSolicitudes: 0,
           solicitudesPagadas: 0,
@@ -67,28 +53,38 @@ module.exports = ({ db, bucket, FieldValue }) => {
         });
       }
 
-      // ─── 3) Prevenir duplicado: validar último submission ─────────
-      const subsSnap = await clientRef.collection('submissions')
+      // 🔹 Verificar duplicado (mismo candidato, puesto y status no_pagado)
+      const lastSnap = await clientRef.collection('submissions')
         .orderBy('timestamp', 'desc')
         .limit(1)
         .get();
 
-      if (!subsSnap.empty) {
-        const lastData = subsSnap.docs[0].data();
+      if (!lastSnap.empty) {
+        const lastData = lastSnap.docs[0].data();
         if (
           lastData.formData?.nombreCandidato === nombreCandidato &&
           lastData.formData?.puesto === puesto &&
           lastData.statusPago === 'no_pagado'
         ) {
-          return res.status(200).json({
+          return res.json({
             ok: true,
-            docId: subsSnap.docs[0].id,
+            docId: lastSnap.docs[0].id,
             cvUrl: lastData.cvUrl
           });
         }
       }
 
-      // ─── 4) Crear submission ───────────────────────
+      // 🔹 Subir CV
+      let cvUrl = '';
+      if (req.file) {
+        const fileName = `cvs/${visitorId}_${Date.now()}_${req.file.originalname}`;
+        const file = bucket.file(fileName);
+        await file.save(req.file.buffer, { contentType: req.file.mimetype });
+        await file.makePublic();
+        cvUrl = `https://storage.googleapis.com/${bucket.name}/${fileName}`;
+      }
+
+      // Crear submission
       const submissionRef = clientRef.collection('submissions').doc();
       await submissionRef.set({
         cvUrl,
@@ -101,13 +97,12 @@ module.exports = ({ db, bucket, FieldValue }) => {
         timestamp: now
       });
 
-      // ─── 5) Actualizar métricas en cliente ─────────
+      // Actualizar métricas
       await clientRef.update({
         totalSolicitudes: FieldValue.increment(1),
         solicitudesNoPagadas: FieldValue.increment(1)
       });
 
-      // ─── 6) Responder con docId y cvUrl ────────────
       res.json({ ok: true, docId: submissionRef.id, cvUrl });
 
     } catch (error) {
