@@ -12,15 +12,18 @@ const PORT   = process.env.PORT || 3001;
 // ─── CONFIGURACIÓN PROXY PARA IP REAL ───────────────────
 app.set('trust proxy', true);
 
-// ─── MIDDLEWARES ────────────────────────────────────────
+// ─── CORS (permitir multipart/form-data) ─────────────────
 app.use(cors({
   origin: [
     'https://frontend-sax-clientes.onrender.com',
     'https://clientes.saxmexico.com'
   ],
   methods: ['GET','POST','OPTIONS'],
-  allowedHeaders: ['Content-Type','Authorization']
+  allowedHeaders: ['Content-Type','Authorization','X-Requested-With'],
+  credentials: true
 }));
+
+// ─── MIDDLEWARE JSON (excepto /webhook) ─────────────────
 app.use((req, res, next) => {
   if (req.path === '/webhook') return next();
   express.json()(req, res, next);
@@ -95,12 +98,10 @@ app.post(
       try {
         const clientRef = db.collection('clientes').doc(clientId);
 
-        // ── 1) Actualizar submission ─────────────────
         await clientRef.collection('submissions').doc(docId).update({
           statusPago: 'pagado'
         });
 
-        // ── 2) Actualizar métricas cliente ───────────
         const clientSnap = await clientRef.get();
         const clientData = clientSnap.data();
         await clientRef.update({
@@ -116,7 +117,6 @@ app.post(
         console.error('❌ Error actualizando cliente:', err);
       }
 
-      // ── 3) Evento GA4 opcional ──────────────────
       try {
         const mpUrl = `https://www.google-analytics.com/mp/collect` +
           `?measurement_id=${process.env.GA4_MEASUREMENT_ID}` +
