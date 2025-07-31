@@ -26,7 +26,7 @@ app.use((req, res, next) => {
   express.json()(req, res, next);
 });
 
-// ─── RUTA DE ESTUDIOS (modularizada) ────────────────────
+// ─── RUTA DE ESTUDIOS ───────────────────────────────────
 const estudiosRouter = require('./routes/estudios')({ db, bucket, FieldValue });
 app.use('/api/estudios', estudiosRouter);
 
@@ -92,42 +92,46 @@ app.post(
       const amount   = (sess.amount_total || 0) / 100;
       const txId     = sess.payment_intent;
 
-      const clientRef = db.collection('clientes').doc(clientId);
+      try {
+        const clientRef = db.collection('clientes').doc(clientId);
 
-      // ── 1) Actualizar submission ─────────────────
-      await clientRef.collection('submissions').doc(docId).update({
-        statusPago: 'pagado'
-      });
+        // ── 1) Actualizar submission ─────────────────
+        await clientRef.collection('submissions').doc(docId).update({
+          statusPago: 'pagado'
+        });
 
-      // ── 2) Actualizar métricas cliente ───────────
-      const clientSnap = await clientRef.get();
-      const clientData = clientSnap.data();
-      await clientRef.update({
-        pago_completado: true,
-        lastPurchase: admin.firestore.FieldValue.serverTimestamp(),
-        stripeSessionId: txId,
-        solicitudesPagadas: FieldValue.increment(1),
-        solicitudesNoPagadas: FieldValue.increment(-1),
-        totalRevenue: FieldValue.increment(amount),
-        ...(clientData.firstPurchase ? {} : { firstPurchase: admin.firestore.FieldValue.serverTimestamp() })
-      });
+        // ── 2) Actualizar métricas cliente ───────────
+        const clientSnap = await clientRef.get();
+        const clientData = clientSnap.data();
+        await clientRef.update({
+          pago_completado: true,
+          lastPurchase: admin.firestore.FieldValue.serverTimestamp(),
+          stripeSessionId: txId,
+          solicitudesPagadas: FieldValue.increment(1),
+          solicitudesNoPagadas: FieldValue.increment(-1),
+          totalRevenue: FieldValue.increment(amount),
+          ...(clientData.firstPurchase ? {} : { firstPurchase: admin.firestore.FieldValue.serverTimestamp() })
+        });
+      } catch (err) {
+        console.error('❌ Error actualizando cliente:', err);
+      }
 
       // ── 3) Evento GA4 opcional ──────────────────
-      const mpUrl = `https://www.google-analytics.com/mp/collect` +
-        `?measurement_id=${process.env.GA4_MEASUREMENT_ID}` +
-        `&api_secret=${process.env.GA4_API_SECRET}`;
-      const payload = {
-        client_id: clientId || txId,
-        events: [{
-          name: 'purchase',
-          params: {
-            transaction_id: txId,
-            value:          amount,
-            currency:       sess.currency.toUpperCase()
-          }
-        }]
-      };
       try {
+        const mpUrl = `https://www.google-analytics.com/mp/collect` +
+          `?measurement_id=${process.env.GA4_MEASUREMENT_ID}` +
+          `&api_secret=${process.env.GA4_API_SECRET}`;
+        const payload = {
+          client_id: clientId || txId,
+          events: [{
+            name: 'purchase',
+            params: {
+              transaction_id: txId,
+              value:          amount,
+              currency:       sess.currency.toUpperCase()
+            }
+          }]
+        };
         const r = await fetch(mpUrl, {
           method: 'POST',
           headers: {'Content-Type':'application/json'},
@@ -145,6 +149,13 @@ app.post(
 
 // ─── RUTA HOME ──────────────────────────────────────────
 app.get('/', (_req, res) => res.send('🚀 Server up!'));
+
+// ─── HANDLER DE ERRORES GLOBAL ──────────────────────────
+app.use((err, req, res, next) => {
+  console.error('🔥 Error global:', err);
+  res.status(500).json({ error: 'Error interno del servidor' });
+});
+
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Listening on port ${PORT}`);
 });
