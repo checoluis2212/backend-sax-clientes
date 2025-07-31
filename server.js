@@ -56,7 +56,7 @@ app.post('/api/checkout', async (req, res) => {
       }],
       mode: 'payment',
       success_url: `https://saxmexico.com/compra`,
-      cancel_url:  `https://saxmexico.com/404`,
+      cancel_url:  `https://clientes.saxmexico.com/?cancelado=true`,
       metadata: {
         docId,
         clientId: clientId || '',
