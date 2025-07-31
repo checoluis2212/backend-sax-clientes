@@ -5,42 +5,35 @@ module.exports = ({ db, bucket, FieldValue }) => {
   const router = express.Router();
   const upload = multer({ storage: multer.memoryStorage() });
 
+  // ────────────────────────────────
+  // 🔹 Crear estudio
+  // ────────────────────────────────
   router.post('/', upload.single('cv'), async (req, res) => {
     try {
-      console.log('📥 Body recibido:', req.body);
-      console.log('📄 Archivo recibido:', req.file?.originalname);
-
       const {
         visitorId,
-        nombreCandidato,
-        ciudad,
-        puesto,
-        source,
-        medium,
-        campaign,
+        nombreCandidato, ciudad, puesto,
+        source, medium, campaign,
         amount
       } = req.body;
 
       if (!visitorId) {
-        console.warn('⚠️ Falta visitorId');
         return res.status(400).json({ ok: false, error: 'visitorId es obligatorio' });
       }
 
-      // 🔹 IP del cliente
+      // 🔹 IP real
       const ipCliente =
         req.headers['x-forwarded-for']?.split(',')[0]?.trim() ||
         req.ip ||
         req.socket?.remoteAddress ||
         null;
-      console.log('🌐 IP Cliente:', ipCliente);
 
       const clientRef = db.collection('clientes').doc(visitorId);
       const clientSnap = await clientRef.get();
-      const now = new Date();
+      const now = new Date().toISOString();
 
-      // ─── Crear cliente si no existe ─────────────
+      // Crear cliente si no existe
       if (!clientSnap.exists) {
-        console.log('🆕 Creando cliente nuevo');
         await clientRef.set({
           clientId: visitorId,
           fechaRegistro: now,
@@ -59,57 +52,45 @@ module.exports = ({ db, bucket, FieldValue }) => {
         });
       }
 
-      // ─── Prevenir duplicados recientes ─────────
-      const unaHoraAtras = new Date(Date.now() - 60 * 60 * 1000);
+      // 🔹 Evitar duplicado
       const duplicateSnap = await clientRef.collection('submissions')
-        .where('nombreCandidato', '==', nombreCandidato)
-        .where('puesto', '==', puesto)
+        .where('formData.nombreCandidato', '==', nombreCandidato)
+        .where('formData.puesto', '==', puesto)
         .where('statusPago', '==', 'no_pagado')
-        .where('timestamp', '>=', unaHoraAtras)
         .limit(1)
         .get();
 
       if (!duplicateSnap.empty) {
-        console.warn('⚠️ Duplicado detectado');
         const existingDoc = duplicateSnap.docs[0];
-        return res.json({
-          ok: true,
-          docId: existingDoc.id,
-          cvUrl: existingDoc.data().cvUrl
-        });
+        return res.json({ ok: true, docId: existingDoc.id, cvUrl: existingDoc.data().cvUrl });
       }
 
-      // ─── Subir CV ───────────────────────────────
+      // 🔹 Subir CV
       let cvUrl = '';
+      let cvPath = '';
       if (req.file) {
-        try {
-          const fileName = `cvs/${visitorId}_${Date.now()}_${req.file.originalname}`;
-          const file = bucket.file(fileName);
-          await file.save(req.file.buffer, { contentType: req.file.mimetype });
-          await file.makePublic();
-          cvUrl = `https://storage.googleapis.com/${bucket.name}/${fileName}`;
-        } catch (err) {
-          console.error('❌ Error subiendo CV:', err);
-          return res.status(500).json({ ok: false, error: 'Error subiendo CV' });
-        }
+        cvPath = `cvs/${visitorId}_${Date.now()}_${req.file.originalname}`;
+        const file = bucket.file(cvPath);
+        await file.save(req.file.buffer, { contentType: req.file.mimetype });
+        await file.makePublic();
+        cvUrl = `https://storage.googleapis.com/${bucket.name}/${cvPath}`;
       }
 
-      // ─── Crear submission ───────────────────────
+      // Crear submission
       const submissionRef = clientRef.collection('submissions').doc();
       await submissionRef.set({
         cvUrl,
+        cvPath,
         formData: { ciudad, nombreCandidato, puesto },
-        nombreCandidato,
-        puesto,
         statusPago: 'no_pagado',
         source: source || 'direct',
         medium: medium || 'none',
         campaign: campaign || 'none',
-        amount: Number(amount) || 0,
+        amount: amount || 0,
         timestamp: now
       });
 
-      // ─── Actualizar métricas cliente ────────────
+      // Actualizar métricas cliente
       await clientRef.update({
         totalSolicitudes: FieldValue.increment(1),
         solicitudesNoPagadas: FieldValue.increment(1)
@@ -120,6 +101,43 @@ module.exports = ({ db, bucket, FieldValue }) => {
     } catch (error) {
       console.error('❌ Error en /api/estudios:', error);
       res.status(500).json({ ok: false, error: 'Error guardando la solicitud' });
+    }
+  });
+
+  // ────────────────────────────────
+  // 🔹 Borrar solicitud
+  // ────────────────────────────────
+  router.delete('/:clientId/:docId', async (req, res) => {
+    try {
+      const { clientId, docId } = req.params;
+      const clientRef = db.collection('clientes').doc(clientId);
+      const submissionRef = clientRef.collection('submissions').doc(docId);
+
+      // Obtener submission para eliminar CV también
+      const snap = await submissionRef.get();
+      const submissionData = snap.data();
+      if (submissionData?.cvPath) {
+        try {
+          await bucket.file(submissionData.cvPath).delete();
+          console.log(`✅ CV eliminado de storage: ${submissionData.cvPath}`);
+        } catch (err) {
+          console.warn(`⚠️ No se pudo eliminar el CV: ${err.message}`);
+        }
+      }
+
+      // Eliminar submission
+      await submissionRef.delete();
+
+      // Si no quedan más submissions → borrar cliente
+      const remaining = await clientRef.collection('submissions').get();
+      if (remaining.empty) {
+        await clientRef.delete();
+      }
+
+      res.json({ ok: true });
+    } catch (e) {
+      console.error('❌ Error eliminando solicitud:', e);
+      res.status(500).json({ ok: false, error: 'Error eliminando solicitud' });
     }
   });
 
