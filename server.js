@@ -1,4 +1,3 @@
-// server.js
 require('dotenv').config();
 const path    = require('path');
 const express = require('express');
@@ -11,55 +10,57 @@ const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
 const app    = express();
 const PORT   = process.env.PORT || 3001;
 
-// ─── CONFIGURACIÓN PROXY PARA IP REAL ───────────────────
+// ─── CONFÍA EN PROXY PARA IP REAL ────────────────────────
 app.set('trust proxy', true);
 
 // ─── CORS ────────────────────────────────────────────────
 app.use(cors({
   origin: [
-    process.env.FRONTEND_URL,    // p.ej. https://clientes.saxmexico.com
-    'http://localhost:5173',     // tu dev de Vite
+    'https://frontend-sax-clientes.onrender.com',
+    'https://clientes.saxmexico.com'
   ],
   methods: ['GET','POST','OPTIONS'],
   allowedHeaders: ['Content-Type','Authorization','X-Requested-With'],
   credentials: true
 }));
 
-// ─── MIDDLEWARE PARA JSON (excepto /webhook) ────────────
+// ─── PARSEO JSON (excepto /webhook) ───────────────────────
 app.use((req, res, next) => {
   if (req.path === '/webhook') return next();
   express.json()(req, res, next);
 });
 
-// ─── RUTAS DE API ────────────────────────────────────────
+// ─── RUTA DE ESTUDIOS ────────────────────────────────────
 const estudiosRouter = require('./routes/estudios')({ db, bucket, FieldValue });
 app.use('/api/estudios', estudiosRouter);
 
+// ─── RUTA DE CHECKOUT ────────────────────────────────────
 app.post('/api/checkout', async (req, res) => {
-  // … tu lógica de checkout …
+  // … TU LÓGICA DE CHECKOUT (igual que antes) …
 });
 
-// Stripe webhook
+// ─── WEBHOOK DE STRIPE ───────────────────────────────────
 app.post(
   '/webhook',
   express.raw({ type: 'application/json' }),
   async (req, res) => {
-    // … tu lógica de webhook …
+    // … TU LÓGICA DE WEBHOOK (igual que antes) …
   }
 );
 
-// ─── SERVIR BUILD DE VITE ───────────────────────────────
-// Ajusta 'dist' si tu salida de Vite es diferente (por defecto es 'dist')
+// ─── SERVIR ESTÁTICOS DE VITE ────────────────────────────
 const clientDist = path.join(__dirname, 'dist');
 app.use(express.static(clientDist));
 
-// ─── CATCH-ALL PARA SPA ────────────────────────────────
-// Cualquier ruta no /api ni /webhook devuelve index.html
-app.get('*', (req, res) => {
+// ─── CATCH-ALL PARA SPA ─────────────────────────────────
+app.get('/*', (req, res) => {
   res.sendFile(path.join(clientDist, 'index.html'));
 });
 
-// ─── ERROR HANDLER GLOBAL ───────────────────────────────
+// ─── RUTA HOME (puedes eliminarla si no la usas) ─────────
+app.get('/', (_req, res) => res.send('🚀 Server up!'));
+
+// ─── HANDLER DE ERRORES GLOBAL ──────────────────────────
 app.use((err, req, res, next) => {
   console.error('🔥 Error global:', err);
   res.status(500).json({ error: 'Error interno del servidor' });
@@ -67,5 +68,5 @@ app.use((err, req, res, next) => {
 
 // ─── LEVANTAR SERVIDOR ───────────────────────────────────
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 Server listening on port ${PORT}`);
+  console.log(`🚀 Listening on port ${PORT}`);
 });
