@@ -1,4 +1,5 @@
-// server.js (en la raíz)
+// server.js (colócalo en la raíz de tu proyecto junto a package.json)
+
 require('dotenv').config()
 const path    = require('path')
 const express = require('express')
@@ -11,10 +12,10 @@ const stripe = Stripe(process.env.STRIPE_SECRET_KEY)
 const app    = express()
 const PORT   = process.env.PORT || 3001
 
-// 1) Trust proxy (para IP real detrás de proxy)
+// 1) Trust proxy (para obtener IP real detrás de un proxy)
 app.set('trust proxy', true)
 
-// 2) CORS — aplica solo a /api y /webhook
+// 2) CORS para rutas de API y webhook
 app.use(cors({
   origin: [
     'https://frontend-sax-clientes.onrender.com',
@@ -25,19 +26,19 @@ app.use(cors({
   credentials: true
 }))
 
-// 3) JSON parser, excepto webhook
+// 3) JSON parser, excepto para /webhook
 app.use((req, res, next) => {
   if (req.path === '/webhook') return next()
   express.json()(req, res, next)
 })
 
-// 4a) Rutas de estudios
+// 4a) Rutas de estudios socioeconómicos
 app.use(
   '/api/estudios',
   require('./routes/estudios')({ db, bucket, FieldValue })
 )
 
-// 4b) Checkout
+// 4b) Crear sesión de pago
 app.post('/api/checkout', async (req, res) => {
   const { docId, tipo, clientId, cac } = req.body
   if (!docId || !tipo) {
@@ -47,7 +48,7 @@ app.post('/api/checkout', async (req, res) => {
     const precios = { estandar: 50000, urgente: 80000 }
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],
-      line_items: [{
+      line_items: [{ 
         price_data: {
           currency: 'mxn',
           product_data: { name: `Estudio: ${tipo}` },
@@ -58,11 +59,7 @@ app.post('/api/checkout', async (req, res) => {
       mode: 'payment',
       success_url: `https://clientes.saxmexico.com/?pagado=true`,
       cancel_url:  `https://clientes.saxmexico.com/?cancelado=true`,
-      metadata: {
-        docId,
-        clientId: clientId || '',
-        cac:      (cac || 0).toString()
-      }
+      metadata: { docId, clientId: clientId||'', cac: String(cac||0) }
     })
     res.json({ checkoutUrl: session.url })
   } catch (err) {
@@ -90,17 +87,17 @@ app.post(
 
     if (event.type === 'checkout.session.completed') {
       const sess     = event.data.object
-      const docId    = sess.metadata.docId
-      const clientId = sess.metadata.clientId
-      const amount   = (sess.amount_total || 0) / 100
+      const { docId, clientId } = sess.metadata
+      const amount   = (sess.amount_total||0)/100
       const txId     = sess.payment_intent
 
-      // Actualiza Firestore
+      // Actualizar Firestore
       try {
         const clientRef = db.collection('clientes').doc(clientId)
-        await clientRef.collection('submissions').doc(docId).update({ statusPago: 'pagado' })
+        await clientRef.collection('submissions').doc(docId)
+          .update({ statusPago: 'pagado' })
         const snap = await clientRef.get()
-        const data = snap.data()
+        const data = snap.data() || {}
         await clientRef.update({
           pago_completado: true,
           lastPurchase: admin.firestore.FieldValue.serverTimestamp(),
@@ -108,22 +105,21 @@ app.post(
           solicitudesPagadas: FieldValue.increment(1),
           solicitudesNoPagadas: FieldValue.increment(-1),
           totalRevenue: FieldValue.increment(amount),
-          ...(data.firstPurchase
-            ? {}
-            : { firstPurchase: admin.firestore.FieldValue.serverTimestamp() })
+          ...(data.firstPurchase ? {} : { firstPurchase: admin.firestore.FieldValue.serverTimestamp() })
         })
       } catch (e) {
         console.error('❌ Error actualizando Firestore:', e)
       }
 
-      // Envía evento a GA4
+      // Enviar evento a GA4
       try {
         const mpUrl = `https://www.google-analytics.com/mp/collect` +
           `?measurement_id=${process.env.GA4_MEASUREMENT_ID}` +
           `&api_secret=${process.env.GA4_API_SECRET}`
         const payload = {
-          client_id: clientId || txId,
-          events: [{ name: 'purchase',
+          client_id: clientId||txId,
+          events: [{
+            name: 'purchase',
             params: {
               transaction_id: txId,
               value:          amount,
@@ -133,10 +129,10 @@ app.post(
         }
         const r = await fetch(mpUrl, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type':'application/json' },
           body: JSON.stringify(payload)
         })
-        console.log(r.status === 204 ? '✅ GA4 event sent' : '❌ GA4 error', await r.text())
+        console.log(r.status===204 ? '✅ GA4 event sent' : '❌ GA4 error', await r.text())
       } catch (e) {
         console.error('❌ GA4 send failed:', e)
       }
@@ -146,23 +142,25 @@ app.post(
   }
 )
 
-// 5) Sirve build de Vite desde /dist
+// 5) Servir build de Vite (dist/)
 const clientDist = path.join(__dirname, 'dist')
 app.use(express.static(clientDist))
 
 // 6) Catch-all para SPA (excluye /api/* y /webhook)
 app.use((req, res, next) => {
-  if (req.path.startsWith('/api/') || req.path === '/webhook') return next()
+  if (req.path.startsWith('/api/') || req.path === '/webhook') {
+    return next()
+  }
   res.sendFile(path.join(clientDist, 'index.html'))
 })
 
-// 7) Error handler global
+// 7) Manejador de errores global
 app.use((err, req, res, next) => {
   console.error('🔥 Error global:', err)
   res.status(500).json({ error: 'Error interno del servidor' })
 })
 
-// 8) Arranca el servidor
+// 8) Arrancar servidor
 app.listen(PORT, () => {
   console.log(`🚀 Server listening on port ${PORT}`)
 })
