@@ -4,7 +4,11 @@
   "description": "Backend para estudios socioeconómicos",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "dev": "vite",
+    "build": "vite build",
+    "start": "npm run build && node server.js",
+    "lint": "eslint .",
+    "preview": "vite preview"
   },
   "keywords": [],
   "author": "",
