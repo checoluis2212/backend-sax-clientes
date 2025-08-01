@@ -1,15 +1,17 @@
-// server.js
-import 'dotenv/config'
-import path from 'path'
-import express from 'express'
-import cors from 'cors'
-import fetch from 'node-fetch'
-import Stripe from 'stripe'
-import { admin, db, bucket, FieldValue } from './firebase.js'
+// server.js (CommonJS)
+// Coloca este archivo en la raíz de tu repo (junto a package.json)
+
+require('dotenv').config()
+const path    = require('path')
+const express = require('express')
+const cors    = require('cors')
+const fetch   = require('node-fetch')
+const Stripe  = require('stripe')
+const { admin, db, bucket, FieldValue } = require('./firebase')
 
 const stripe = Stripe(process.env.STRIPE_SECRET_KEY)
-const app = express()
-const PORT = process.env.PORT || 3001
+const app    = express()
+const PORT   = process.env.PORT || 3001
 
 // 1) Confía en proxy para IP real
 app.set('trust proxy', true)
@@ -34,7 +36,7 @@ app.use((req, res, next) => {
 // 4) Rutas de API
 app.use(
   '/api/estudios',
-  (await import('./routes/estudios.js')).default({ db, bucket, FieldValue })
+  require('./routes/estudios')({ db, bucket, FieldValue })
 )
 
 app.post('/api/checkout', async (req, res) => {
@@ -151,14 +153,12 @@ app.post(
 )
 
 // 5) Sirve tu build de Vite (dist/ en la raíz)
-const clientDist = path.join(__dirname, '..', 'dist')
+const clientDist = path.join(__dirname, 'dist')
 app.use(express.static(clientDist))
 
-// 6) Catch-all para tu SPA
+// 6) Catch-all para tu SPA (excluyendo /api y /webhook)
 app.use((req, res, next) => {
-  if (req.path.startsWith('/api/') || req.path === '/webhook') {
-    return next()
-  }
+  if (req.path.startsWith('/api/') || req.path === '/webhook') return next()
   res.sendFile(path.join(clientDist, 'index.html'))
 })
 
