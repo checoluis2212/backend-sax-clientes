@@ -1,4 +1,4 @@
-// src/server.js
+// server.js (en la raíz de tu proyecto)
 require('dotenv').config()
 const path    = require('path')
 const express = require('express')
@@ -11,10 +11,10 @@ const stripe = Stripe(process.env.STRIPE_SECRET_KEY)
 const app    = express()
 const PORT   = process.env.PORT || 3001
 
-// 1) Trust proxy para IP real
+// 1) Confía en proxy para IP real
 app.set('trust proxy', true)
 
-// 2) CORS — solo en /api y /webhook
+// 2) CORS — sólo para /api y /webhook
 app.use(cors({
   origin: [
     'https://frontend-sax-clientes.onrender.com',
@@ -25,7 +25,7 @@ app.use(cors({
   credentials: true
 }))
 
-// 3) JSON parser excepto webhook
+// 3) JSON parser (excepto webhook)
 app.use((req, res, next) => {
   if (req.path === '/webhook') return next()
   express.json()(req, res, next)
@@ -37,14 +37,22 @@ app.use(
   require('./routes/estudios')({ db, bucket, FieldValue })
 )
 
-app.post('/api/checkout', /* …igual que antes… */)
-app.post('/webhook', /* …igual que antes… */)
+app.post('/api/checkout', async (req, res) => {
+  // tu lógica de checkout…
+})
 
-// 5) Sirve tu build de Vite (que está en /dist EN LA RAÍZ)
-const clientDist = path.join(__dirname, '..', 'dist')
+app.post('/webhook',
+  express.raw({ type: 'application/json' }),
+  async (req, res) => {
+    // tu lógica de webhook…
+  }
+)
+
+// 5) Sirve estáticos desde dist/ en la raíz
+const clientDist = path.join(__dirname, 'dist')
 app.use(express.static(clientDist))
 
-// 6) Catch-all SPA (solo rutas que no empiecen con /api o /webhook)
+// 6) Catch-all SPA: para todo lo que NO sea /api/* ni /webhook
 app.use((req, res, next) => {
   if (req.path.startsWith('/api/') || req.path === '/webhook') {
     return next()
@@ -52,13 +60,13 @@ app.use((req, res, next) => {
   res.sendFile(path.join(clientDist, 'index.html'))
 })
 
-// 7) Manejador de errores
+// 7) Error handler
 app.use((err, req, res, next) => {
-  console.error('🔥 Global error:', err)
-  res.status(500).json({ error: 'Error interno' })
+  console.error('🔥 Error global:', err)
+  res.status(500).json({ error: 'Error interno del servidor' })
 })
 
-// 8) Arranca
+// 8) Arranca el server
 app.listen(PORT, () => {
   console.log(`🚀 Server listening on port ${PORT}`)
 })
