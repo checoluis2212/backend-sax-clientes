@@ -1,3 +1,4 @@
+// server.js
 require('dotenv').config();
 const path    = require('path');
 const express = require('express');
@@ -10,10 +11,10 @@ const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
 const app    = express();
 const PORT   = process.env.PORT || 3001;
 
-// ─── CONFÍA EN PROXY PARA IP REAL ────────────────────────
+// 1) Confía en proxy para IP real
 app.set('trust proxy', true);
 
-// ─── CORS ────────────────────────────────────────────────
+// 2) CORS — solo rutas de API
 app.use(cors({
   origin: [
     'https://frontend-sax-clientes.onrender.com',
@@ -24,49 +25,42 @@ app.use(cors({
   credentials: true
 }));
 
-// ─── PARSEO JSON (excepto /webhook) ───────────────────────
+// 3) JSON parser (excepto webhook)
 app.use((req, res, next) => {
   if (req.path === '/webhook') return next();
   express.json()(req, res, next);
 });
 
-// ─── RUTA DE ESTUDIOS ────────────────────────────────────
-const estudiosRouter = require('./routes/estudios')({ db, bucket, FieldValue });
-app.use('/api/estudios', estudiosRouter);
-
-// ─── RUTA DE CHECKOUT ────────────────────────────────────
+// 4) Rutas de API
+app.use('/api/estudios', require('./routes/estudios')({ db, bucket, FieldValue }));
 app.post('/api/checkout', async (req, res) => {
-  // … TU LÓGICA DE CHECKOUT (igual que antes) …
+  // … tu lógica de checkout …
 });
-
-// ─── WEBHOOK DE STRIPE ───────────────────────────────────
 app.post(
   '/webhook',
   express.raw({ type: 'application/json' }),
   async (req, res) => {
-    // … TU LÓGICA DE WEBHOOK (igual que antes) …
+    // … tu lógica de webhook …
   }
 );
 
-// ─── SERVIR ESTÁTICOS DE VITE ────────────────────────────
+// 5) Sirve tu build de Vite (dist/)
 const clientDist = path.join(__dirname, 'dist');
 app.use(express.static(clientDist));
 
-// ─── CATCH-ALL PARA SPA ─────────────────────────────────
+// 6) Catch-all para tu SPA: **solo** rutas que NO empiecen por "/api" ni "/webhook"
 app.get('/*', (req, res) => {
+  // si la petición es para /api o /webhook, Express ya la procesó arriba
   res.sendFile(path.join(clientDist, 'index.html'));
 });
 
-// ─── RUTA HOME (puedes eliminarla si no la usas) ─────────
-app.get('/', (_req, res) => res.send('🚀 Server up!'));
-
-// ─── HANDLER DE ERRORES GLOBAL ──────────────────────────
+// 7) Manejador de errores
 app.use((err, req, res, next) => {
   console.error('🔥 Error global:', err);
   res.status(500).json({ error: 'Error interno del servidor' });
 });
 
-// ─── LEVANTAR SERVIDOR ───────────────────────────────────
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 Listening on port ${PORT}`);
+// 8) Arranca el servidor
+app.listen(PORT, () => {
+  console.log(`🚀 Server listening on port ${PORT}`);
 });
