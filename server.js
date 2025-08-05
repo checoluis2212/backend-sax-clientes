@@ -1,6 +1,5 @@
 // src/server.js
 require('dotenv').config()
-const path    = require('path')
 const express = require('express')
 const cors    = require('cors')
 const fetch   = require('node-fetch')
@@ -11,10 +10,10 @@ const stripe = Stripe(process.env.STRIPE_SECRET_KEY)
 const app    = express()
 const PORT   = process.env.PORT || 3001
 
-// ─── 1) Trust proxy para obtener IP real detrás de proxy ─────────────
+// ─── 1) Trust proxy ────────────────────────────────────────────────
 app.set('trust proxy', true)
 
-// ─── 2) CORS — solo para API y webhook ───────────────────────────────
+// ─── 2) CORS — solo para API y webhook ─────────────────────────────
 app.use(cors({
   origin: [
     'https://frontend-sax-clientes.onrender.com',
@@ -25,13 +24,13 @@ app.use(cors({
   credentials: true
 }))
 
-// ─── 3) JSON parser (excepto webhook) ────────────────────────────────
+// ─── 3) JSON parser (excepto webhook) ──────────────────────────────
 app.use((req, res, next) => {
   if (req.path === '/webhook') return next()
   express.json()(req, res, next)
 })
 
-// ─── 3.5) Middleware de autenticación con API Key ─────────────────────
+// ─── 4) Middleware API Key ─────────────────────────────────────────
 const apiKeyAuth = (req, res, next) => {
   const key = req.headers['x-api-key']
   if (!key || key !== process.env.API_KEY) {
@@ -40,14 +39,14 @@ const apiKeyAuth = (req, res, next) => {
   next()
 }
 
-// ─── 4a) Rutas de estudios socioeconómicos (protegidas) ──────────────
+// ─── 5) Rutas de estudios (protegidas) ─────────────────────────────
 app.use(
   '/api/estudios',
   apiKeyAuth,
   require('./routes/estudios')({ db, bucket, FieldValue })
 )
 
-// ─── 4b) Crear sesión de pago (protegida) ────────────────────────────
+// ─── 6) Crear sesión de pago (protegida) ───────────────────────────
 app.post('/api/checkout', apiKeyAuth, async (req, res) => {
   const { docId, tipo, clientId, cac } = req.body
   if (!docId || !tipo) {
@@ -81,7 +80,7 @@ app.post('/api/checkout', apiKeyAuth, async (req, res) => {
   }
 })
 
-// ─── 4c) Webhook de Stripe (NO requiere API Key) ─────────────────────
+// ─── 7) Webhook de Stripe ─────────────────────────────────────────
 app.post(
   '/webhook',
   express.raw({ type: 'application/json' }),
@@ -165,27 +164,18 @@ app.post(
   }
 )
 
-// ─── 5) Servir build de Vite (dist/ en la raíz) ─────────────────────
-const clientDist = path.join(__dirname, '..', 'dist')
-console.log('⭐️ Servir estáticos desde:', clientDist)
-
-app.use(express.static(clientDist))
-
-// ─── 6) Catch-all para SPA (excluye /api/* y /webhook) ─────────────
-app.use((req, res, next) => {
-  if (req.path.startsWith('/api/') || req.path === '/webhook') {
-    return next()
-  }
-  res.sendFile(path.join(clientDist, 'index.html'))
+// ─── 8) Health-check ─────────────────────────────────────────────
+app.get('/', (req, res) => {
+  res.send('✅ API de SAX México funcionando')
 })
 
-// ─── 7) Manejador de errores global ────────────────────────────────
+// ─── 9) Manejador de errores global ──────────────────────────────
 app.use((err, req, res, next) => {
   console.error('🔥 Error global:', err)
   res.status(500).json({ error: 'Error interno del servidor' })
 })
 
-// ─── 8) Arrancar servidor ─────────────────────────────────────────
+// ─── 10) Arrancar servidor ──────────────────────────────────────
 app.listen(PORT, () => {
   console.log(`🚀 Server listening on port ${PORT}`)
 })
